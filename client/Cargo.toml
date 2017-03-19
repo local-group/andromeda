@@ -1,0 +1,28 @@
+[package]
+name = "mqtt-client"
+version = "0.1.0"
+authors = ["Qian Linfeng <thewawar@gmail.com>"]
+
+[dependencies]
+clap = "^2.9.0"
+log = "^0.3.2"
+env_logger = "^0.3.1"
+uuid = "^0.1.17"
+time = "0.1"
+readline = "0.0.12"
+ansi_term = "0.8.0"
+rustyline = "0.2.3"
+openssl = "0.9.5"
+futures = "0.1"
+tokio-core = "0.1"
+native-tls = "0.1"
+tokio-tls = "0.1"
+
+[dependencies.mqtt-protocol]
+path = "../protocol"
+
+[lib]
+name = "client"
+
+[[bin]]
+name = "mqttc"

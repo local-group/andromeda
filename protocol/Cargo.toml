@@ -1,0 +1,22 @@
+[package]
+authors = ["Y. T. Chung <zonyitoo@gmail.com>"]
+name = "mqtt-protocol"
+version = "0.2.1-pre"
+license = "MIT/Apache-2.0"
+description = "MQTT Protocol Library"
+keywords = ["mqtt", "protocol"]
+repository = "https://github.com/zonyitoo/mqtt-rs"
+
+[dependencies]
+byteorder = "^0.3.13"
+log = "^0.3.2"
+regex = "^0.1.41"
+
+[dev-dependencies]
+clap = "^1.4.0"
+env_logger = "^0.3.1"
+uuid = "^0.1.17"
+time = "0.1"
+
+[lib]
+name = "mqtt"

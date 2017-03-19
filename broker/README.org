@@ -1,0 +1,53 @@
+* Protocol 3.1.1
+> http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/csprd02/mqtt-v3.1.1-csprd02.html
+
+* Tasks
+** DONE pub/sub QoS=0
+** DONE RETAIN flag
+   + This will effect global server state.
+** DONE Will message
+** DONE QoS=1
+** DONE QoS=2
+** DONE Clean Session flag
+** DONE High performace timer manager
+   + [QoS.1.send] Receive PUBACK timeout
+   + [QoS.2.send] Receive PUBREC timeout
+   + [QoS.2.send] Receive PUBCOMP timeout
+   + [QoS.2.recv] Receive PUBREL timeout
+   + Receive PINGREQ timeout
+
+** DONE DUP flag
+** DONE Keep Alive
+** Topic prefix with `$`
+** TLS/SSL support
+** WebSocket (wss:// only)
+   + Why support WebSocket ?
+     The communications are done over TCP port number 80/443, which is of benefit
+     for those environments which block non-web Internet connections using a
+     firewall.
+
+*** Links
+    + https://en.wikipedia.org/wiki/WebSocket
+
+** HTTP publish message
+** Storage (raft cluster)
+*** route table
+*** retain messages
+*** client session registration
+    + Which hub node does client locate?
+    + How many clients of one user connected?
+    + How many clients in one node?
+*** hub node registration
+    + hub node's UUID
+    + hub node connected to which storage nodes?
+    + How many hub nodes of one storage node connected?
+** AES support
+   + We should use AES-256-CFB8 ?
+** Policy support
+
+* Issues
+** `tokio::io::read` not work (performace issue)
+** Don't know how to shutdown tcp connection
+** Read arguments from config file
+** `futures::sync::mpsc::Sender::send().wait()` maybe have performace issue
+** Check subscribe permissions

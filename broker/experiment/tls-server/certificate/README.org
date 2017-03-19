@@ -1,0 +1,61 @@
+* References
+** Generate certificates
+
+#+BEGIN_SRC bash
+# Step-1: Generate .key/.req files
+openssl req -newkey rsa:1024 -keyout server.key -nodes -config ./openssl.cnf -out server.req
+# Step-2: Generate .cert file
+openssl ca -config ./openssl.cnf -out server.cert -infiles ./xxx/server.req
+# Step-3: Generate .pfx file (pkcs12)
+openssl pkcs12 -export -out server.pfx -inkey server.key -in server.cert -certfile ../../CA/root-ca.cert
+#+END_SRC
+
+** Two-way SSL clarification:
+   > http://stackoverflow.com/questions/10725572/two-way-ssl-clarification
+   
+   So, two-way ssl is not needed, just use generated ACCESS_KEY, ACCESS_SECRET pair.
+
+  @Bruno: http://stackoverflow.com/a/10725958/1274372
+  ======
+   Both certificates should exist prior to the connection. They're usually
+   created by Certification Authorities (not necessarily the same). (There are
+   alternative cases where verification can be done differently, but some
+   verification will need to be made.)
+
+   The server certificate should be created by a CA that the client trusts (and
+   following the naming conventions defined in RFC 6125).
+   
+   The client certificate should be created by a CA that the server trusts.
+   
+   It's up to each party to choose what it trusts.
+   
+   There are online CA tools that will allow you to apply for a certificate
+   within your browser and get it installed there once the CA has issued it.
+   They need not be on the server that requests client-certificate
+   authentication.
+   
+   The certificate distribution and trust management is the role of the Public
+   Key Infrastructure (PKI), implemented via the CAs. The SSL/TLS client and
+   servers and then merely users of that PKI.
+
+   When the client connects to a server that requests client-certificate
+   authentication, the server sends a list of CAs it's willing to accept as part
+   of the client-certificate request. The client is then able to send its client
+   certificate, if it wishes to and a suitable one is available.
+
+   The main advantages of client-certificate authentication are:
+
+     * The private information (the private key) is never sent to the server. The
+       client doesn't let its secret out at all during the authentication.
+
+     * A server that doesn't know a user with that certificate can still
+       authenticate that user, provided it trusts the CA that issued the
+       certificate (and that the certificate is valid). This is very similar to
+       the way passports are used: you may have never met a person showing you a
+       passport, but because you trust the issuing authority, you're able to
+       link the identity to the person.
+
+   You may be interested in Advantages of client certificates for client
+   authentication? (on Security.SE).
+** How do API Keys and Secret Keys work?
+   > http://stackoverflow.com/questions/2674445/how-do-api-keys-and-secret-keys-work
