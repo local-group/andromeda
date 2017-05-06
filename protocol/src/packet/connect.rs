@@ -48,6 +48,10 @@ impl ConnectPacket {
         self.encoded_variable_headers_length() + self.payload().encoded_length()
     }
 
+    pub fn protocol_name(&self) -> &str {
+        &(self.protocol_name.0)
+    }
+
     pub fn set_keep_alive(&mut self, keep_alive: u16) {
         self.keep_alive = KeepAlive(keep_alive);
     }
