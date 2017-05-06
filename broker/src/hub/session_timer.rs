@@ -34,6 +34,7 @@ pub fn run(inbox: Receiver<(SessionTimerAction, SessionTimerPayload)>,
         for _ in 0..inbox_count {
             match inbox.try_recv() {
                 Ok((action, payload)) => {
+                    debug!("Set timeout: action={:?}, payload={:?}", action, payload);
                     match action {
                         SessionTimerAction::Set(end) => {
                             if let Some((_, timeout)) = timeouts.remove(&payload) {
@@ -68,6 +69,7 @@ pub fn run(inbox: Receiver<(SessionTimerAction, SessionTimerPayload)>,
         for _ in 0..timer_count {
             match timer.poll() {
                 Some(payload) => {
+                    debug!("Timeout: payload={:?}", payload);
                     client_session_tx.send(ClientSessionMsg::Timeout(payload)).unwrap();
                 }
                 None => {

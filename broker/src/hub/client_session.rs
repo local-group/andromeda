@@ -1,4 +1,5 @@
 
+use std::fmt;
 use std::cmp;
 use std::time::{Instant, Duration};
 use std::net::SocketAddr;
@@ -37,7 +38,7 @@ pub fn run(
     let mut persistents = HashMap::<(u32, String), PersistentSession>::new();
     // TODO: Read timeouts from config file
     let recv_packet_timeout = Duration::from_secs(20);
-    let default_keep_alive = Duration::from_secs(5); // aws-iot: 5 => 1200 seconds
+    let default_keep_alive = Duration::from_secs(30); // aws-iot: 5 => 1200 seconds
 
     loop {
         let msg = client_session_rx.recv().unwrap();
@@ -63,13 +64,13 @@ pub fn run(
                 let mut session = sessions.get_mut(&addr).unwrap();
                 session.recv_packet(&mut persistents, addr, data);
             }
-            ClientSessionMsg::ClientDisconnect(addr) => {
+            ClientSessionMsg::ClientDisconnect(addr, reason) => {
                 // * Remove related information in `local_router`
                 // * Send last will packet
                 // * Close Client connection
                 // * Remove current session
                 if let Some(mut session) = sessions.remove(&addr) {
-                    let msg = ClientConnectionMsg::DisconnectClient(addr);
+                    let msg = ClientConnectionMsg::DisconnectClient(addr, reason);
                     client_connection_tx.clone().send(msg).wait().unwrap();
 
                     if session.connected {
@@ -117,6 +118,8 @@ pub fn run(
             }
             // Receive packet from `local_router`
             ClientSessionMsg::Publish(addr, subscribe_qos, mut packet) => {
+                debug!("[ClientSessionMsg::Publish]: addr={:?}, subscribe_qos={:?}, packet={:?}",
+                       addr, subscribe_qos, packet);
                 // * Forward encoded packet to Client
                 // * [if(qos > 0)] Save packet in current session.packets:
                 //    > [server:PublishPacket]
@@ -139,19 +142,34 @@ pub fn run(
                 // packet is a retransmission [MQTT-3.3.1-3].
                 packet.set_dup(false);
 
-                let qos = cmp::min(packet.qos_val(), subscribe_qos as u8);
-                if qos == 0 {
+                let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
+                if qos_val == 0 {
+                    packet.set_qos(QoSWithPacketIdentifier::Level0);
                     encode_to_client(addr, &packet, &client_connection_tx);
                 } else {
-                    if let Some(session) = sessions.get_mut(&addr) {
-                        session.send_publish(&packet, qos, &client_connection_tx);
+                    if let Some(mut session) = sessions.get_mut(&addr) {
+                        let pkid = session.incr_pkid();
+                        match qos_val {
+                            1 => {
+                                packet.set_qos(QoSWithPacketIdentifier::Level1(pkid));
+                                session.send_publish(&packet, &client_connection_tx);
+                            }
+                            2 => {
+                                packet.set_qos(QoSWithPacketIdentifier::Level2(pkid));
+                                session.send_publish(&packet, &client_connection_tx);
+                            }
+                            _ => {
+                                error!("Invalid qos value: {:?}", qos_val);
+                            }
+                        }
                     } else {
                         // TODO: why can not find?
+                        error!("[ClientSessionMsg::Publish]: Cant not find target session");
                     }
                 }
             }
             ClientSessionMsg::RetainPackets(_, addr, packets, subscribe_qos) => {
-                let session = sessions.get_mut(&addr).unwrap();
+                let mut session = sessions.get_mut(&addr).unwrap();
 
                 for mut packet in packets {
 
@@ -165,11 +183,24 @@ pub fn run(
                     // See: [MQTT-3.3.1-3]
                     packet.set_dup(false);
 
-                    let qos = cmp::min(packet.qos_val(), subscribe_qos as u8);
-                    if qos == 0 {
-                        encode_to_client(addr, &packet, &client_connection_tx);
-                    } else {
-                        session.send_publish(&packet, qos, &client_connection_tx);
+                    let pkid = session.incr_pkid();
+                    let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
+                    match qos_val {
+                        0 => {
+                            packet.set_qos(QoSWithPacketIdentifier::Level0);
+                            session.send_publish(&packet, &client_connection_tx);
+                        }
+                        1 => {
+                            packet.set_qos(QoSWithPacketIdentifier::Level1(pkid));
+                            session.send_publish(&packet, &client_connection_tx);
+                        }
+                        2 => {
+                            packet.set_qos(QoSWithPacketIdentifier::Level2(pkid));
+                            session.send_publish(&packet, &client_connection_tx);
+                        }
+                        _ => {
+                            error!("Invalid qos value: {:?}", qos_val);
+                        }
                     }
                 }
             }
@@ -217,12 +248,12 @@ pub fn run(
                             }
                             if let Some((mut packet, qos)) = publish_packet {
                                 packet.set_dup(true);
-                                session.send_publish(&packet, qos, &client_connection_tx);
+                                session.send_publish(&packet, &client_connection_tx);
                             }
                         }
                     }
                     &SessionTimerPayload::KeepAliveTimer(addr) => {
-                        let msg = ClientConnectionMsg::DisconnectClient(addr);
+                        let msg = ClientConnectionMsg::DisconnectClient(addr, "Keep-Alive timeout!".to_owned());
                         client_connection_tx.clone().send(msg).wait().unwrap();
                     }
                 }
@@ -336,13 +367,12 @@ impl Session {
     /// Send PublishPacket to client
     pub fn send_publish(&mut self,
                         packet: &PublishPacket,
-                        qos: u8,
                         client_connection_tx: &mpsc::Sender<ClientConnectionMsg>) {
+        debug!("[Session.send_publish]: packet={:?}", packet);
         encode_to_client(self.addr, packet, client_connection_tx);
-        let pkid = self.incr_pkid();
         let mut timer_payload: Option<SessionTimerPayload> = None;
-        match qos {
-            1 => {
+        match packet.qos() {
+            QoSWithPacketIdentifier::Level1(pkid) => {
                 if let Some(ref mut persistent) = self.persistent {
                     persistent.qos1_send_packets.insert(pkid, packet.clone());
                     timer_payload = Some(SessionTimerPayload::RecvPacketTimer(
@@ -350,15 +380,20 @@ impl Session {
                     ));
                 }
             }
-            2 => {
+            QoSWithPacketIdentifier::Level2(pkid) => {
                 if let Some(ref mut persistent) = self.persistent {
+                    debug!("[Session.send_publish]: INSERT qos2_send_packets(pkid={:?})", pkid);
                     persistent.qos2_send_packets.insert(pkid, (packet.clone(), false, false));
                     timer_payload = Some(SessionTimerPayload::RecvPacketTimer(
                         SessionTimerPacketType::RecvPubrecTimeout, self.addr, pkid
                     ));
+                } else {
+                    warn!("[Session.send_publish]: self.persistent is None");
                 }
             }
-            _ => panic!("Invalid qos")
+            qos @ _ => {
+                error!("Invalid qos: {:?}", qos);
+            }
         };
 
         if let Some(payload) = timer_payload {
@@ -444,7 +479,7 @@ impl Session {
                 if let Some(header_len) = header_len {
                     if header_len >= 6 {
                         // Error fixed header, close Client!
-                        let msg = ClientConnectionMsg::DisconnectClient(addr);
+                        let msg = ClientConnectionMsg::DisconnectClient(addr, "Invalid header length!".to_owned());
                         self.client_connection_tx.clone().send(msg).wait().unwrap();
                         break;
                     }
@@ -467,7 +502,7 @@ impl Session {
                         let mut bytes = payload_buf.as_ref();
                         let packet = VariablePacket::decode_with(&mut bytes, Some(fixed_header)).unwrap();
                         decoded_packet_count += 1;
-                        debug!("> Decoded packet: {:?}", packet);
+                        debug!("[>>>>]: {:?}", packet);
 
                         if let VariablePacket::ConnectPacket(pkt) = packet {
                             // * Send ConnackPacket to Client
@@ -477,11 +512,14 @@ impl Session {
                                 // The Server MUST process a second CONNECT Packet
                                 // sent from a Client as a protocol violation and
                                 // disconnect the Client [MQTT-3.1.0-2]
-                                let msg = ClientConnectionMsg::DisconnectClient(addr);
+                                let msg = ClientConnectionMsg::DisconnectClient(addr, "Client already connected!".to_owned());
                                 // TODO: Maybe have performace issue!
                                 self.client_connection_tx.clone().send(msg).wait().unwrap();
+                            } else if pkt.protocol_name() != "MQTT" {
+                                let msg = ClientConnectionMsg::DisconnectClient(
+                                    addr, format!("Invalid protocol name: {:?}!", pkt.protocol_name()));
+                                self.client_connection_tx.clone().send(msg).wait().unwrap();
                             } else {
-                                debug!("> Connected: {:?}", &pkt);
                                 // TODO: how to set `user_id` ???
                                 let user_id = 0;
                                 let client_identifier = pkt.client_identifier().to_string();
@@ -493,7 +531,7 @@ impl Session {
                                     Some(PersistentSession::new(user_id, client_identifier))
                                 };
                                 let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
-                                if keep_alive < self.keep_alive_timeout.as_secs() {
+                                if keep_alive > 0 && keep_alive < self.keep_alive_timeout.as_secs() {
                                     self.keep_alive_timeout = Duration::from_secs(keep_alive);
                                 }
                                 self.connect_packet = Some(pkt);
@@ -501,7 +539,7 @@ impl Session {
                                 encode_to_client(addr, &connack, &self.client_connection_tx);
                             }
                         } else if !self.connected {
-                            let msg = ClientConnectionMsg::DisconnectClient(addr);
+                            let msg = ClientConnectionMsg::DisconnectClient(addr, "Client not connected yet!".to_owned());
                             self.client_connection_tx.clone().send(msg).wait().unwrap();
                         } else {
                             match packet {
@@ -544,6 +582,7 @@ impl Session {
 
                                         match persistent.qos2_send_packets.remove(&pkid) {
                                             Some((publish_pkt, _, _)) => {
+                                                debug!("[PubrecPacket]: Remove qos2_send_packets(pkid={:?})", pkid);
                                                 let pubrel = PubrelPacket::new(pkid);
                                                 encode_to_client(addr, &pubrel, &(self.client_connection_tx));
                                                 persistent.qos2_send_packets.insert(pkid, (publish_pkt, true, true));
@@ -557,8 +596,11 @@ impl Session {
                                             }
                                             None => {
                                                 // Send PUBREC twice, just ignore it.
+                                                warn!("[PubrecPacket]: Send PUBREC twice, just ignore it.(pikd={:?})", pkid);
                                             }
                                         };
+                                    } else {
+                                        warn!("[PubrecPacket]: self.persistent not found!");
                                     }
                                 }
                                 VariablePacket::PubrelPacket(pkt) => {
@@ -591,6 +633,7 @@ impl Session {
                                             )
                                         );
                                         self.session_timer_tx.send(timer_msg).unwrap();
+                                        debug!("[PubcompPacket]: Remove qos2_send_packets(pkid={:?})", pkid);
                                         persistent.qos2_send_packets.remove(&pkid).unwrap();
                                     }
                                 }
@@ -608,7 +651,7 @@ impl Session {
                                     // * Remove connect packet' last will
                                     if let Some(ref mut packet) = self.connect_packet {
                                         packet.set_will(None);
-                                        let msg = ClientConnectionMsg::DisconnectClient(addr);
+                                        let msg = ClientConnectionMsg::DisconnectClient(addr, "Receive disconnect packet!".to_owned());
                                         self.client_connection_tx.clone().send(msg).wait().unwrap();
                                     } else { unreachable!() }
                                 }
@@ -673,8 +716,8 @@ impl Session {
                                 VariablePacket::PingrespPacket(_) |
                                 VariablePacket::SubackPacket(_) |
                                 VariablePacket::UnsubackPacket(_) => {
-                                    // * Invalid packet, close Client
-                                    let msg = ClientConnectionMsg::DisconnectClient(addr);
+                                    // * Invalid packet(only broker can send those packets), close Client
+                                    let msg = ClientConnectionMsg::DisconnectClient(addr, "Can't send broker only packets!".to_owned());
                                     self.client_connection_tx.clone().send(msg).wait().unwrap();
                                 }
                             };
@@ -706,8 +749,9 @@ pub fn encode_to_client<'a, T>(
     addr: SocketAddr,
     packet: &'a T,
     client_connection_tx: &mpsc::Sender<ClientConnectionMsg>)
-    where T: Encodable<'a>
+    where T: Packet<'a> + fmt::Debug + 'a
 {
+    debug!("[<<<<]: {:?}", packet);
     let mut buf = Vec::new();
     packet.encode(&mut buf).unwrap();
     let msg = ClientConnectionMsg::Data(addr, buf);

@@ -57,11 +57,11 @@ pub fn run_epoll(
                 if let Some(tx) = connections.get_mut(&addr) {
                     tx.send(data).unwrap();
                 } else {
-                    let m = ClientSessionMsg::ClientDisconnect(addr);
+                    let m = ClientSessionMsg::ClientDisconnect(addr, "Connection closed unexpected!".to_owned());
                     cloned_client_session_tx.send(m).unwrap();
                 }
             }
-            ClientConnectionMsg::DisconnectClient(addr) => {
+            ClientConnectionMsg::DisconnectClient(addr, _) => {
                 let mut connections = cloned_connections.borrow_mut();
                 if let Some(tx) = connections.get_mut(&addr) {
                     tx.send(Vec::new()).unwrap();
@@ -146,7 +146,7 @@ fn handle_socket<S>(
         let cloned_client_session_tx = cloned_client_session_tx.clone();
         data.map(move |(reader, buf, n)| {
             let buf = buf.iter().take(n).cloned().collect();
-            println!("> [server] Received: {:?}", buf);
+            debug!("> [server] Received: {:?}", buf);
             let msg = ClientSessionMsg::Data(addr, buf);
             cloned_client_session_tx.send(msg).unwrap();
             reader
@@ -155,7 +155,7 @@ fn handle_socket<S>(
 
     // Receive data from `inbox` then write to socket
     let socket_writer = rx.fold(writer, |writer, data| {
-        println!("> [server] Write all: {:?}", data);
+        debug!("> [server] Write all: {:?}", data);
         tokio_io::write_all(writer, data)
             .and_then(|(writer, data)| {
                 if data.is_empty() {
@@ -182,7 +182,7 @@ fn handle_socket<S>(
     let cloned_client_session_tx = client_session_tx.clone();
     let connections = connections.clone();
     handle.spawn(connection.then(move |_| {
-        let m = ClientSessionMsg::ClientDisconnect(addr);
+        let m = ClientSessionMsg::ClientDisconnect(addr, "Normal disconnect!".to_owned());
         cloned_client_session_tx.send(m).unwrap();
         connections.borrow_mut().remove(&addr);
         debug!("Connection {} closed.", addr);

@@ -22,3 +22,4 @@ mod common;
 mod test_simple;
 mod test_local_router;
 mod test_global_retain;
+mod test_timer;

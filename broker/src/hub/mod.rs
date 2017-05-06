@@ -6,6 +6,7 @@ pub mod router_follower;
 pub mod router_leader;
 pub mod session_timer;
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -14,18 +15,19 @@ use mqtt::packet::{PublishPacket, SubscribePacket, UnsubscribePacket};
 
 
 /// Message structure send to `client_connection`
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ClientConnectionMsg {
     Data(SocketAddr, Vec<u8>),
-    DisconnectClient(SocketAddr)
+    DisconnectClient(SocketAddr, String)
     // Shutdown
 }
 
-#[derive(Debug, Clone)]
+
+#[derive(Clone)]
 pub enum ClientSessionMsg {
     Data(SocketAddr, Vec<u8>),
     Publish(SocketAddr, QualityOfService, PublishPacket),
-    ClientDisconnect(SocketAddr),
+    ClientDisconnect(SocketAddr, String),
     // (user_id, addr, packets, subscribe_qos)
     RetainPackets(u32, SocketAddr, Vec<PublishPacket>, QualityOfService),
     Timeout(SessionTimerPayload)
@@ -80,4 +82,18 @@ pub enum SessionTimerPayload {
     KeepAliveTimer(SocketAddr),
     // Decode one packet timeout (maybe useless ??)
     // DecodePacketTimer(SocketAddr),
+}
+
+/// impl Debug for structures
+impl fmt::Debug for ClientConnectionMsg {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &ClientConnectionMsg::Data(addr, ref bytes) => {
+                write!(f, "Write <<{} bytes>> to client [{:?}]", bytes.len(), addr)
+            }
+            &ClientConnectionMsg::DisconnectClient(addr, ref reason) => {
+                write!(f, "Disconnect [{:?}] because: <<{}>>", addr, reason)
+            }
+        }
+    }
 }
