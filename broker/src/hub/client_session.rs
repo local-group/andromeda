@@ -3,7 +3,7 @@ use std::fmt;
 use std::cmp;
 use std::time::{Instant, Duration};
 use std::net::SocketAddr;
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap};
 use std::sync::mpsc::{Sender, Receiver};
 
 use futures::sync::mpsc;
@@ -34,6 +34,7 @@ pub fn run(
     local_router_tx: Sender<LocalRouterMsg>,
     global_retain_tx: Sender<GlobalRetainMsg>,
 ) {
+    let mut addrs = HashMap::<(u32, String), SocketAddr>::new();
     let mut sessions = HashMap::<SocketAddr, Session>::new();
     let mut persistents = HashMap::<(u32, String), PersistentSession>::new();
     // TODO: Read timeouts from config file
@@ -62,7 +63,7 @@ pub fn run(
                     session_timer_tx.send(timer_msg).unwrap();
                 }
                 let mut session = sessions.get_mut(&addr).unwrap();
-                session.recv_packet(&mut persistents, addr, data);
+                session.recv_packet(&mut addrs, &mut persistents, addr, data);
             }
             ClientSessionMsg::ClientDisconnect(addr, reason) => {
                 // * Remove related information in `local_router`
@@ -74,12 +75,15 @@ pub fn run(
                     client_connection_tx.clone().send(msg).wait().unwrap();
 
                     if session.connected {
+                        addrs.remove(&(session.user_id().unwrap(), session.client_identifier().unwrap()));
                         let mut clean_session = true;
                         if let Some(ref pkt) = session.connect_packet {
                             clean_session = pkt.clean_session();
                         }
                         if clean_session {
-                            let msg = LocalRouterMsg::ClientDisconnect(session.user_id().unwrap(), addr);
+                            let msg = LocalRouterMsg::ClientDisconnect(
+                                session.user_id().unwrap(), session.client_identifier().unwrap()
+                            );
                             local_router_tx.clone().send(msg).unwrap();
                         }
 
@@ -117,55 +121,62 @@ pub fn run(
                 }
             }
             // Receive packet from `local_router`
-            ClientSessionMsg::Publish(addr, subscribe_qos, mut packet) => {
-                debug!("[ClientSessionMsg::Publish]: addr={:?}, subscribe_qos={:?}, packet={:?}",
-                       addr, subscribe_qos, packet);
+            ClientSessionMsg::Publish(user_id, client_identifier, subscribe_qos, mut packet) => {
+                debug!("[ClientSessionMsg::Publish]: client_identifier={:?}, subscribe_qos={:?}, packet={:?}",
+                       client_identifier, subscribe_qos, packet);
                 // * Forward encoded packet to Client
                 // * [if(qos > 0)] Save packet in current session.packets:
                 //    > [server:PublishPacket]
 
-                // <Spec.RETAIN>:
-                // =============
-                // It MUST set the RETAIN flag to 0 when a PUBLISH Packet is
-                // sent to a Client because it matches an established
-                // subscription regardless of how the flag was set in the
-                // message it received [MQTT-3.3.1-9].
-                packet.set_retain(false);
+                if let Some(addr) = addrs.get(&(user_id, client_identifier.clone())) {
+                    // <Spec.RETAIN>:
+                    // =============
+                    // It MUST set the RETAIN flag to 0 when a PUBLISH Packet is
+                    // sent to a Client because it matches an established
+                    // subscription regardless of how the flag was set in the
+                    // message it received [MQTT-3.3.1-9].
+                    packet.set_retain(false);
 
-                // <Spec.DUP>:
-                // ==========
-                // The value of the DUP flag from an incoming PUBLISH packet is
-                // not propagated when the PUBLISH Packet is sent to subscribers
-                // by the Server. The DUP flag in the outgoing PUBLISH packet is
-                // set independently to the incoming PUBLISH packet, its value
-                // MUST be determined solely by whether the outgoing PUBLISH
-                // packet is a retransmission [MQTT-3.3.1-3].
-                packet.set_dup(false);
+                    // <Spec.DUP>:
+                    // ==========
+                    // The value of the DUP flag from an incoming PUBLISH packet is
+                    // not propagated when the PUBLISH Packet is sent to subscribers
+                    // by the Server. The DUP flag in the outgoing PUBLISH packet is
+                    // set independently to the incoming PUBLISH packet, its value
+                    // MUST be determined solely by whether the outgoing PUBLISH
+                    // packet is a retransmission [MQTT-3.3.1-3].
+                    packet.set_dup(false);
 
-                let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
-                if qos_val == 0 {
-                    packet.set_qos(QoSWithPacketIdentifier::Level0);
-                    encode_to_client(addr, &packet, &client_connection_tx);
-                } else {
-                    if let Some(mut session) = sessions.get_mut(&addr) {
-                        let pkid = session.incr_pkid();
-                        match qos_val {
-                            1 => {
-                                packet.set_qos(QoSWithPacketIdentifier::Level1(pkid));
-                                session.send_publish(&packet, &client_connection_tx);
-                            }
-                            2 => {
-                                packet.set_qos(QoSWithPacketIdentifier::Level2(pkid));
-                                session.send_publish(&packet, &client_connection_tx);
-                            }
-                            _ => {
-                                error!("Invalid qos value: {:?}", qos_val);
-                            }
-                        }
+                    let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
+                    if qos_val == 0 {
+                        packet.set_qos(QoSWithPacketIdentifier::Level0);
+                        encode_to_client(*addr, &packet, &client_connection_tx);
                     } else {
-                        // TODO: why can not find?
-                        error!("[ClientSessionMsg::Publish]: Cant not find target session, addr={:?}", addr);
+                        if let Some(mut session) = sessions.get_mut(&addr) {
+                            let pkid = session.incr_pkid();
+                            match qos_val {
+                                1 => {
+                                    packet.set_qos(QoSWithPacketIdentifier::Level1(pkid));
+                                    session.send_publish(&packet, &client_connection_tx);
+                                }
+                                2 => {
+                                    packet.set_qos(QoSWithPacketIdentifier::Level2(pkid));
+                                    session.send_publish(&packet, &client_connection_tx);
+                                }
+                                _ => {
+                                    error!("Invalid qos value: {:?}", qos_val);
+                                }
+                            }
+                        } else if let Some(mut persistent) = persistents.get_mut(&(user_id, client_identifier)){
+                            // TODO: 
+                        } else {
+                            // TODO: why can not find?
+                            error!("[ClientSessionMsg::Publish]: Cant not find target session, addr={:?}", addr);
+                        }
                     }
+                } else {
+                    warn!("[ClientSessionMsg::Publish]: Can find addr for >> user_id={}, client_identifier={}",
+                          user_id, client_identifier);
                 }
             }
             ClientSessionMsg::RetainPackets(_, addr, packets, subscribe_qos) => {
@@ -499,6 +510,7 @@ impl Session {
     }
 
     pub fn recv_packet(&mut self,
+                       addrs: &mut HashMap<(u32, String), SocketAddr>,
                        persistents: &mut HashMap<(u32, String), PersistentSession>,
                        addr: SocketAddr, data: Vec<u8>) {
         // Append data to session.buf
@@ -578,8 +590,9 @@ impl Session {
                                     persistent
                                 } else {
                                     info!("[ConnectPacket]: use NEW persistent, client_id={:?}", client_identifier);
-                                    Some(PersistentSession::new(user_id, client_identifier))
+                                    Some(PersistentSession::new(user_id, client_identifier.clone()))
                                 };
+                                addrs.insert((user_id, client_identifier), addr);
                                 let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
                                 if keep_alive > 0 && keep_alive < self.keep_alive_timeout.as_secs() {
                                     self.keep_alive_timeout = Duration::from_secs(keep_alive);
@@ -717,7 +730,7 @@ impl Session {
                                     // SUBACK Packet [MQTT-3.8.4-1].
 
                                     let msg = LocalRouterMsg::Subscribe(
-                                        self.user_id().unwrap(), self.addr, pkt.clone());
+                                        self.user_id().unwrap(), self.client_identifier().unwrap(), addr, pkt.clone());
                                     self.local_router_tx.send(msg).unwrap();
                                     let return_codes = pkt
                                         .payload()
@@ -756,7 +769,7 @@ impl Session {
                                     // UNSUBACK [MQTT-3.10.4-5].
                                     let pkid = pkt.packet_identifier();
                                     let msg = LocalRouterMsg::Unsubscribe(self.user_id().unwrap(),
-                                                                          self.addr, pkt);
+                                                                          self.client_identifier().unwrap(), pkt);
                                     self.local_router_tx.send(msg).unwrap();
                                     let unsuback = UnsubackPacket::new(pkid);
                                     encode_to_client(addr, &unsuback, &(self.client_connection_tx));
