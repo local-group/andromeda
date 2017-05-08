@@ -3,7 +3,7 @@ use std::fmt;
 use std::cmp;
 use std::time::{Instant, Duration};
 use std::net::SocketAddr;
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 use std::sync::mpsc::{Sender, Receiver};
 
 use futures::sync::mpsc;
@@ -164,7 +164,7 @@ pub fn run(
                         }
                     } else {
                         // TODO: why can not find?
-                        error!("[ClientSessionMsg::Publish]: Cant not find target session");
+                        error!("[ClientSessionMsg::Publish]: Cant not find target session, addr={:?}", addr);
                     }
                 }
             }
@@ -247,6 +247,7 @@ pub fn run(
                                 }
                             }
                             if let Some((mut packet, qos)) = publish_packet {
+                                // FIXME: should use this qos?
                                 packet.set_dup(true);
                                 session.send_publish(&packet, &client_connection_tx);
                             }
@@ -304,6 +305,7 @@ impl PersistentSession {
             self.qos2_recv_packets.contains_key(&self.pkid);
         if used { self.incr_pkid() } else { self.pkid }
     }
+
 }
 
 pub struct Session {
@@ -391,9 +393,7 @@ impl Session {
                     warn!("[Session.send_publish]: self.persistent is None");
                 }
             }
-            qos @ _ => {
-                error!("Invalid qos: {:?}", qos);
-            }
+            _ => {}
         };
 
         if let Some(payload) = timer_payload {
@@ -447,6 +447,54 @@ impl Session {
                     }
                 }
             };
+        }
+    }
+
+    pub fn redelivery_packets(&mut self) {
+        let persistent = self.persistent.take();
+        if let Some(mut persistent) = persistent {
+            let client_connection_tx = self.client_connection_tx.clone();
+            for packet in persistent.qos1_send_packets.values() {
+                self.send_publish(packet, &client_connection_tx);
+            }
+            for (pkid, &(ref publish, pubrec, pubrel)) in &persistent.qos2_send_packets {
+                if pubrec {
+                    let pubrel = PubrelPacket::new(*pkid);
+                    encode_to_client(self.addr, &pubrel, &client_connection_tx);
+                    let timer_payload = SessionTimerPayload::RecvPacketTimer(
+                        SessionTimerPacketType::RecvPubcompTimeout, self.addr, *pkid
+                    );
+                    let timer_msg = (SessionTimerAction::Set(
+                        Instant::now() + self.recv_packet_timeout),
+                                     timer_payload);
+                    self.session_timer_tx.send(timer_msg).unwrap();
+                } else {
+                    self.send_publish(&publish, &client_connection_tx);
+                }
+            }
+            let mut comp_items = Vec::new();
+            for (pkid, &(_, pubrec, pubrel)) in &persistent.qos2_recv_packets {
+                if pubrel {
+                    // Send pubcomp
+                    comp_items.push(*pkid);
+                    let pubcomp = PubcompPacket::new(*pkid);
+                    encode_to_client(self.addr, &pubcomp, &client_connection_tx);
+                } else {
+                    // Send pubrec
+                    let pkt = PubrecPacket::new(*pkid);
+                    encode_to_client(self.addr, &pkt, &client_connection_tx);
+                    let timer_payload = SessionTimerPayload::RecvPacketTimer(
+                        SessionTimerPacketType::RecvPubrelTimeout, self.addr, *pkid
+                    );
+                    let timer_msg = (SessionTimerAction::Set(
+                        Instant::now() + self.recv_packet_timeout), timer_payload);
+                    self.session_timer_tx.send(timer_msg).unwrap();
+                }
+            }
+            for pkid in comp_items {
+                persistent.qos2_recv_packets.remove(&pkid);
+            }
+            self.persistent = Some(persistent);
         }
     }
 
@@ -526,8 +574,10 @@ impl Session {
                                 self.connected = true;
                                 let persistent = persistents.remove(&(user_id, client_identifier.clone()));
                                 self.persistent = if !pkt.clean_session() && persistent.is_some() {
+                                    info!("[ConnectPacket]: use OLD persistent, client_id={:?}", client_identifier);
                                     persistent
                                 } else {
+                                    info!("[ConnectPacket]: use NEW persistent, client_id={:?}", client_identifier);
                                     Some(PersistentSession::new(user_id, client_identifier))
                                 };
                                 let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
@@ -537,6 +587,7 @@ impl Session {
                                 self.connect_packet = Some(pkt);
                                 let connack = ConnackPacket::new(false, ConnectReturnCode::ConnectionAccepted);
                                 encode_to_client(addr, &connack, &self.client_connection_tx);
+                                self.redelivery_packets();
                             }
                         } else if !self.connected {
                             let msg = ClientConnectionMsg::DisconnectClient(addr, "Client not connected yet!".to_owned());
