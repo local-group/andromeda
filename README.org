@@ -1,5 +1,8 @@
 * Tests
 #+BEGIN_SRC bash
+git clone https://github.com/local-group/andromeda.git
+cd andromeda/broker
+
 # Self included tests
 cargo test
 
