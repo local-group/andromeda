@@ -38,11 +38,10 @@ pub fn run(
             LocalRouterMsg::Subscribe(user_id, client_identifier, addr, packet) => {
                 for &(ref topic_filter, qos) in packet.payload().subscribes() {
                     let topic = Topic::from_filter(topic_filter);
-                    let first_subscribe = local_routes.insert_topic(user_id, &topic, &client_identifier, qos);
-                    if first_subscribe {
-                        let msg = GlobalRetainMsg::MatchAll(user_id, addr, topic, qos);
-                        global_retain_tx.send(msg).unwrap();
-                    }
+                    let _ = local_routes.insert_topic(user_id, &topic, &client_identifier, qos);
+                    // <Spec>: [MQTT-3.8.4-3] "Any existing retained messages matching the Topic Filter MUST be re-sent"
+                    let msg = GlobalRetainMsg::MatchAll(user_id, addr, topic, qos);
+                    global_retain_tx.send(msg).unwrap();
                 }
             }
             LocalRouterMsg::Unsubscribe(user_id, client_identifier, packet) => {
