@@ -1,0 +1,11 @@
+* Tests
+#+BEGIN_SRC bash
+# Self included tests
+cargo test
+
+# Tests from eclipse
+cargo run
+git clone https://github.com/eclipse/paho.mqtt.python.git
+cd paho.mqtt.python/interoperability
+python3 client_test.py -z -p 8883
+#+END_SRC
