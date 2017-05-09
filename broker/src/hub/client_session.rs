@@ -594,28 +594,37 @@ impl Session {
                                 // TODO: how to set `user_id` ???
                                 let user_id = 0;
                                 let client_identifier = pkt.client_identifier().to_string();
-                                self.connected = true;
-                                let persistent = persistents.remove(&(user_id, client_identifier.clone()));
-                                let mut session_present = false;
-                                self.persistent = if !pkt.clean_session() && persistent.is_some() {
-                                    info!("[ConnectPacket]: use OLD persistent, client_id={:?}", client_identifier);
-                                    session_present = true;
-                                    persistent
+                                if client_identifier.is_empty() && !pkt.clean_session() {
+                                    // <Spec>: [MQTT-3.1.3-8]
+                                    let connack = ConnackPacket::new(false, ConnectReturnCode::IdentifierRejected);
+                                    encode_to_client(addr, &connack, &self.client_connection_tx);
+                                    let msg = ClientConnectionMsg::DisconnectClient(
+                                        addr, "Empty client identifier and not clean session".to_owned());
+                                    self.client_connection_tx.clone().send(msg).wait().unwrap();
                                 } else {
-                                    info!("[ConnectPacket]: use NEW persistent, client_id={:?}", client_identifier);
-                                    Some(PersistentSession::new(user_id, client_identifier.clone(), max_offline_msgs))
-                                };
-                                addrs.insert((user_id, client_identifier), addr);
-                                let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
-                                if keep_alive > 0 && keep_alive < self.keep_alive_timeout.as_secs() {
-                                    self.keep_alive_timeout = Duration::from_secs(keep_alive);
+                                    self.connected = true;
+                                    let persistent = persistents.remove(&(user_id, client_identifier.clone()));
+                                    let mut session_present = false;
+                                    self.persistent = if !pkt.clean_session() && persistent.is_some() {
+                                        info!("[ConnectPacket]: use OLD persistent, client_id={:?}", client_identifier);
+                                        session_present = true;
+                                        persistent
+                                    } else {
+                                        info!("[ConnectPacket]: use NEW persistent, client_id={:?}", client_identifier);
+                                        Some(PersistentSession::new(user_id, client_identifier.clone(), max_offline_msgs))
+                                    };
+                                    addrs.insert((user_id, client_identifier), addr);
+                                    let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
+                                    if keep_alive > 0 && keep_alive < self.keep_alive_timeout.as_secs() {
+                                        self.keep_alive_timeout = Duration::from_secs(keep_alive);
+                                    }
+                                    self.connect_packet = Some(pkt);
+                                    // <Spec>: session present flag ([MQTT-3.2.2-1], [MQTT-3.2.2-2], [MQTT-3.2.2-3])
+                                    let connack = ConnackPacket::new(session_present, ConnectReturnCode::ConnectionAccepted);
+                                    encode_to_client(addr, &connack, &self.client_connection_tx);
+                                    self.redelivery_packets();
+                                    self.send_offline_msgs();
                                 }
-                                self.connect_packet = Some(pkt);
-                                // <Spec>: session present flag ([MQTT-3.2.2-1], [MQTT-3.2.2-2], [MQTT-3.2.2-3])
-                                let connack = ConnackPacket::new(session_present, ConnectReturnCode::ConnectionAccepted);
-                                encode_to_client(addr, &connack, &self.client_connection_tx);
-                                self.redelivery_packets();
-                                self.send_offline_msgs();
                             }
                         } else if !self.connected {
                             let msg = ClientConnectionMsg::DisconnectClient(addr, "Client not connected yet!".to_owned());
