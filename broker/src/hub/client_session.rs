@@ -3,7 +3,7 @@ use std::fmt;
 use std::cmp;
 use std::time::{Instant, Duration};
 use std::net::SocketAddr;
-use std::collections::{HashMap};
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Sender, Receiver};
 
 use futures::sync::mpsc;
@@ -40,6 +40,7 @@ pub fn run(
     // TODO: Read timeouts from config file
     let recv_packet_timeout = Duration::from_secs(20);
     let default_keep_alive = Duration::from_secs(30); // aws-iot: 5 => 1200 seconds
+    let max_offline_msgs = 100;
 
     loop {
         let msg = client_session_rx.recv().unwrap();
@@ -63,7 +64,7 @@ pub fn run(
                     session_timer_tx.send(timer_msg).unwrap();
                 }
                 let mut session = sessions.get_mut(&addr).unwrap();
-                session.recv_packet(&mut addrs, &mut persistents, addr, data);
+                session.recv_packet(&mut addrs, &mut persistents, addr, data, max_offline_msgs);
             }
             ClientSessionMsg::ClientDisconnect(addr, reason) => {
                 // * Remove related information in `local_router`
@@ -128,6 +129,7 @@ pub fn run(
                 // * [if(qos > 0)] Save packet in current session.packets:
                 //    > [server:PublishPacket]
 
+                let mut offline = true;
                 if let Some(addr) = addrs.get(&(user_id, client_identifier.clone())) {
                     // <Spec.RETAIN>:
                     // =============
@@ -147,36 +149,25 @@ pub fn run(
                     // packet is a retransmission [MQTT-3.3.1-3].
                     packet.set_dup(false);
 
-                    let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
-                    if qos_val == 0 {
-                        packet.set_qos(QoSWithPacketIdentifier::Level0);
-                        encode_to_client(*addr, &packet, &client_connection_tx);
+                    if let Some(mut session) = sessions.get_mut(&addr) {
+                        offline = false;
+                        session.send_publish_with_qos(&mut packet, subscribe_qos, &client_connection_tx);
                     } else {
-                        if let Some(mut session) = sessions.get_mut(&addr) {
-                            let pkid = session.incr_pkid();
-                            match qos_val {
-                                1 => {
-                                    packet.set_qos(QoSWithPacketIdentifier::Level1(pkid));
-                                    session.send_publish(&packet, &client_connection_tx);
-                                }
-                                2 => {
-                                    packet.set_qos(QoSWithPacketIdentifier::Level2(pkid));
-                                    session.send_publish(&packet, &client_connection_tx);
-                                }
-                                _ => {
-                                    error!("Invalid qos value: {:?}", qos_val);
-                                }
-                            }
-                        } else if let Some(mut persistent) = persistents.get_mut(&(user_id, client_identifier)){
-                            // TODO: 
-                        } else {
-                            // TODO: why can not find?
-                            error!("[ClientSessionMsg::Publish]: Cant not find target session, addr={:?}", addr);
-                        }
+                        warn!("[ClientSessionMsg::Publish]: Cant not find target session, addr={:?}", addr);
                     }
+
                 } else {
                     warn!("[ClientSessionMsg::Publish]: Can find addr for >> user_id={}, client_identifier={}",
                           user_id, client_identifier);
+                }
+
+                if offline {
+                    if let Some(mut persistent) = persistents.get_mut(&(user_id, client_identifier.clone())){
+                        persistent.add_offline_msg(&packet, subscribe_qos);
+                    } else {
+                        error!("[ClientSessionMsg::Publish]: offline but no persistent found: user_id={}, client_identifier={}",
+                               user_id, &client_identifier);
+                    }
                 }
             }
             ClientSessionMsg::RetainPackets(_, addr, packets, subscribe_qos) => {
@@ -193,26 +184,7 @@ pub fn run(
 
                     // See: [MQTT-3.3.1-3]
                     packet.set_dup(false);
-
-                    let pkid = session.incr_pkid();
-                    let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
-                    match qos_val {
-                        0 => {
-                            packet.set_qos(QoSWithPacketIdentifier::Level0);
-                            session.send_publish(&packet, &client_connection_tx);
-                        }
-                        1 => {
-                            packet.set_qos(QoSWithPacketIdentifier::Level1(pkid));
-                            session.send_publish(&packet, &client_connection_tx);
-                        }
-                        2 => {
-                            packet.set_qos(QoSWithPacketIdentifier::Level2(pkid));
-                            session.send_publish(&packet, &client_connection_tx);
-                        }
-                        _ => {
-                            error!("Invalid qos value: {:?}", qos_val);
-                        }
-                    }
+                    session.send_publish_with_qos(&mut packet, subscribe_qos, &client_connection_tx);
                 }
             }
             ClientSessionMsg::Timeout(payload) => {
@@ -285,6 +257,8 @@ pub struct PersistentSession {
 
     // Packet Identifier
     pkid: u16,
+    max_offline_msgs: u32,
+    offline_msgs: VecDeque<(PublishPacket, QualityOfService)>,
     // Fly window for QoS in [1, 2]
     qos1_send_packets: HashMap<u16, PublishPacket>,
     // pkid => (publish, pubrec, pubrel)
@@ -295,11 +269,13 @@ pub struct PersistentSession {
 
 impl PersistentSession {
 
-    fn new(user_id: u32, client_identifier: String) -> PersistentSession {
+    fn new(user_id: u32, client_identifier: String, max_offline_msgs: u32) -> PersistentSession {
         PersistentSession {
             user_id: user_id,
             client_identifier: client_identifier,
             pkid: 0,
+            max_offline_msgs: max_offline_msgs,
+            offline_msgs: VecDeque::new(),
             qos1_send_packets: HashMap::new(),
             qos2_send_packets: HashMap::new(),
             qos2_recv_packets: HashMap::new(),
@@ -317,6 +293,12 @@ impl PersistentSession {
         if used { self.incr_pkid() } else { self.pkid }
     }
 
+    fn add_offline_msg(&mut self, msg: &PublishPacket, subscribe_qos: QualityOfService) {
+        if self.offline_msgs.len() >= self.max_offline_msgs as usize {
+            self.offline_msgs.pop_front();
+        }
+        self.offline_msgs.push_back((msg.clone(), subscribe_qos));
+    }
 }
 
 pub struct Session {
@@ -375,6 +357,21 @@ impl Session {
         if let Some(ref mut persistent) = self.persistent {
             persistent.incr_pkid()
         } else { unreachable!() }
+    }
+
+    pub fn send_publish_with_qos(&mut self,
+                                 packet: &mut PublishPacket,
+                                 subscribe_qos: QualityOfService,
+                                 client_connection_tx: &mpsc::Sender<ClientConnectionMsg>) {
+        let qos_val = cmp::min(packet.qos_val(), subscribe_qos as u8);
+        let pkid = if qos_val > 0 { self.incr_pkid() } else { 0 };
+        match qos_val {
+            0 => packet.set_qos(QoSWithPacketIdentifier::Level0),
+            1 => packet.set_qos(QoSWithPacketIdentifier::Level1(pkid)),
+            2 => packet.set_qos(QoSWithPacketIdentifier::Level2(pkid)),
+            _ => { unreachable!() }
+        }
+        self.send_publish(&packet, &client_connection_tx);
     }
 
     /// Send PublishPacket to client
@@ -461,6 +458,20 @@ impl Session {
         }
     }
 
+    pub fn send_offline_msgs(&mut self) {
+        let client_connection_tx = self.client_connection_tx.clone();
+        let mut items = Vec::new();
+        if let Some(ref mut persistent) = self.persistent {
+            for (packet, subscribe_qos) in persistent.offline_msgs.drain(..) {
+                items.push((packet, subscribe_qos));
+            }
+        }
+        info!("send_offline_msgs(): {} messages", items.len());
+        for (ref mut packet, subscribe_qos) in items {
+            self.send_publish_with_qos(packet, subscribe_qos, &client_connection_tx);
+        }
+    }
+
     pub fn redelivery_packets(&mut self) {
         let persistent = self.persistent.take();
         if let Some(mut persistent) = persistent {
@@ -512,7 +523,7 @@ impl Session {
     pub fn recv_packet(&mut self,
                        addrs: &mut HashMap<(u32, String), SocketAddr>,
                        persistents: &mut HashMap<(u32, String), PersistentSession>,
-                       addr: SocketAddr, data: Vec<u8>) {
+                       addr: SocketAddr, data: Vec<u8>, max_offline_msgs: u32) {
         // Append data to session.buf
         self.buf.get_mut().extend_from_slice(data.as_slice());
         let mut decoded_packet_count = 0;
@@ -585,12 +596,14 @@ impl Session {
                                 let client_identifier = pkt.client_identifier().to_string();
                                 self.connected = true;
                                 let persistent = persistents.remove(&(user_id, client_identifier.clone()));
+                                let mut session_present = false;
                                 self.persistent = if !pkt.clean_session() && persistent.is_some() {
                                     info!("[ConnectPacket]: use OLD persistent, client_id={:?}", client_identifier);
+                                    session_present = true;
                                     persistent
                                 } else {
                                     info!("[ConnectPacket]: use NEW persistent, client_id={:?}", client_identifier);
-                                    Some(PersistentSession::new(user_id, client_identifier.clone()))
+                                    Some(PersistentSession::new(user_id, client_identifier.clone(), max_offline_msgs))
                                 };
                                 addrs.insert((user_id, client_identifier), addr);
                                 let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
@@ -598,9 +611,11 @@ impl Session {
                                     self.keep_alive_timeout = Duration::from_secs(keep_alive);
                                 }
                                 self.connect_packet = Some(pkt);
-                                let connack = ConnackPacket::new(false, ConnectReturnCode::ConnectionAccepted);
+                                // <Spec>: session present flag ([MQTT-3.2.2-1], [MQTT-3.2.2-2], [MQTT-3.2.2-3])
+                                let connack = ConnackPacket::new(session_present, ConnectReturnCode::ConnectionAccepted);
                                 encode_to_client(addr, &connack, &self.client_connection_tx);
                                 self.redelivery_packets();
+                                self.send_offline_msgs();
                             }
                         } else if !self.connected {
                             let msg = ClientConnectionMsg::DisconnectClient(addr, "Client not connected yet!".to_owned());
