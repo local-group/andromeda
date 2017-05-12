@@ -1,6 +1,26 @@
 
 use mqtt::{TopicName, TopicFilter};
 
+pub struct UserId(pub u32);
+
+/// Just for topic filters
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RouteKey {
+    Normal(String),
+    OneLevel,
+    RestLevels,
+}
+
+impl<'a> From<&'a str> for RouteKey {
+    fn from(token: &'a str) -> RouteKey {
+        match token {
+            "+" => RouteKey::OneLevel,
+            "#" => RouteKey::RestLevels,
+            s @ _ => RouteKey::Normal(s.to_string())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Topic {
     Filter(TopicFilter),

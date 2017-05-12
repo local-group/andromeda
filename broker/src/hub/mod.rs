@@ -26,12 +26,14 @@ pub enum ClientConnectionMsg {
     // Shutdown
 }
 
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub struct ClientIdentifier(pub String);
 
 #[derive(Clone)]
 pub enum ClientSessionMsg {
     Data(SocketAddr, Vec<u8>),
     // (user_id, client_identifier, qos, packet)
-    Publish(u32, String, QualityOfService, PublishPacket),
+    Publish(u32, ClientIdentifier, QualityOfService, PublishPacket),
     ClientDisconnect(SocketAddr, String),
     // (user_id, addr, packets, subscribe_qos)
     RetainPackets(u32, SocketAddr, Vec<PublishPacket>, QualityOfService),
@@ -46,9 +48,9 @@ pub enum LocalRouterMsg {
     // Receive publish packet from `router_follower` or `local_router`
     Publish(u32, PublishPacket),
     // (user_id, client_identifier, packet)
-    Subscribe(u32, String, SocketAddr, SubscribePacket),
-    Unsubscribe(u32, String, UnsubscribePacket),
-    ClientDisconnect(u32, String),
+    Subscribe(u32, ClientIdentifier, SocketAddr, SubscribePacket),
+    Unsubscribe(u32, ClientIdentifier, UnsubscribePacket),
+    ClientDisconnect(u32, ClientIdentifier),
     // Shutdown
 }
 

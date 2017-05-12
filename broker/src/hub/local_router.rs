@@ -7,9 +7,9 @@ use futures::sync::mpsc;
 use mqtt::packet::{Packet};
 use mqtt::{TopicFilter, TopicName, QualityOfService};
 
-use common::{Topic};
+use common::{Topic, RouteKey};
 use store::{GlobalRetainMsg};
-use super::{ClientSessionMsg, LocalRouterMsg};
+use super::{ClientSessionMsg, LocalRouterMsg, ClientIdentifier};
 
 
 pub fn run(
@@ -31,8 +31,8 @@ pub fn run(
             LocalRouterMsg::Publish(user_id, packet) => {
                 let topic_name = TopicName::new(packet.topic_name().to_string()).unwrap();
                 let clients: HashMap<_, _> = local_routes.search(user_id, &topic_name);
-                for (addr, qos) in clients {
-                    client_session_tx.send(ClientSessionMsg::Publish(user_id, addr, qos, packet.clone())).unwrap();
+                for (client_identifier, qos) in clients {
+                    client_session_tx.send(ClientSessionMsg::Publish(user_id, client_identifier, qos, packet.clone())).unwrap();
                 }
             }
             LocalRouterMsg::Subscribe(user_id, client_identifier, addr, packet) => {
@@ -58,46 +58,26 @@ pub fn run(
 }
 
 
-
-/// Just for topic filters
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RouteKey {
-    Normal(String),
-    OneLevel,
-    RestLevels,
-}
-
-impl<'a> From<&'a str> for RouteKey {
-    fn from(token: &'a str) -> RouteKey {
-        match token {
-            "+" => RouteKey::OneLevel,
-            "#" => RouteKey::RestLevels,
-            s @ _ => RouteKey::Normal(s.to_string())
-        }
-    }
-}
-
-// type MqttClient = (u32, SocketAddr);
-
 // TODO:
 // ====
 //  * Slow now, use `nikomatsakis/rayon` to speed up!
 
+
 #[derive(Debug)]
 pub struct LocalRouteNode {
     children: Option<HashMap<RouteKey, LocalRouteNode>>,
-    clients: Option<HashMap<String, QualityOfService>>
+    clients: HashMap<ClientIdentifier, QualityOfService>
 }
 
 impl LocalRouteNode {
     pub fn new () -> LocalRouteNode {
         LocalRouteNode {
             children: None,
-            clients: None
+            clients: HashMap::new()
         }
     }
 
-    pub fn insert(&mut self, tf: &TopicFilter, client_identifier: &str, qos: QualityOfService) -> bool {
+    pub fn insert(&mut self, tf: &TopicFilter, client_identifier: &ClientIdentifier, qos: QualityOfService) -> bool {
         let mut last_node = (*tf).split("/").fold(self, |current, token| {
             let token = RouteKey::from(token);
             if current.children.is_none() {
@@ -114,28 +94,17 @@ impl LocalRouteNode {
             }
         });
 
-        if last_node.clients.is_none() {
-            last_node.clients = Some(HashMap::<String, QualityOfService>::new())
-        }
-        match last_node.clients {
-            Some(ref mut client_map) => {
-                client_map.insert(client_identifier.to_owned(), qos).is_none()
-            }
-            _ => unreachable!()
-        }
+        last_node.clients.insert(client_identifier.clone(), qos).is_none()
     }
 
     pub fn is_empty(&self) -> bool {
-        (match self.clients {
-            Some(ref client_map) => client_map.is_empty(),
-            None => true
-        }) && (match self.children {
+        self.clients.is_empty() && (match self.children {
             Some(ref map) => map.is_empty(),
             None => true
         })
     }
 
-    fn _remove<'a, I>(&mut self, mut tokens: I, client_identifier: &str) -> bool
+    fn _remove<'a, I>(&mut self, mut tokens: I, client_identifier: &ClientIdentifier) -> bool
         where I: Iterator<Item=&'a str>
     {
         match tokens.next() {
@@ -161,22 +130,17 @@ impl LocalRouteNode {
                 }
             }
             None => {
-                match self.clients {
-                    Some(ref mut client_map) => {
-                        client_map.remove(client_identifier).is_some()
-                    }
-                    None => false
-                }
+                self.clients.remove(client_identifier).is_some()
             }
         }
     }
 
-    pub fn remove(&mut self, tf: &TopicFilter, client_identifier: &str) -> bool {
+    pub fn remove(&mut self, tf: &TopicFilter, client_identifier: &ClientIdentifier) -> bool {
         self._remove((*tf).split("/"), client_identifier)
     }
 
-    fn _search(&self, tokens: &Vec<&str>, index: usize) -> HashMap<String, QualityOfService> {
-        let mut clients = HashMap::<String, QualityOfService>::new();
+    fn _search(&self, tokens: &Vec<&str>, index: usize) -> HashMap<ClientIdentifier, QualityOfService> {
+        let mut clients = HashMap::<ClientIdentifier, QualityOfService>::new();
         if let Some(token) = tokens.get(index) {
             match self.children {
                 Some(ref map) => {
@@ -187,22 +151,18 @@ impl LocalRouteNode {
                         clients.extend(node._search(tokens, index+1));
                     }
                     if let Some(node) = map.get(&RouteKey::RestLevels) {
-                        if let Some(ref new_clients) = node.clients {
-                            clients.extend(new_clients.clone());
-                        }
+                        clients.extend(node.clients.clone());
                     }
                 }
                 None => {}
             }
         } else {
-            if let Some(ref new_clients) = self.clients {
-                clients.extend(new_clients.clone());
-            }
+            clients.extend(self.clients.clone());
         }
         clients
     }
 
-    pub fn search(&self, name: &TopicName) -> HashMap<String, QualityOfService> {
+    pub fn search(&self, name: &TopicName) -> HashMap<ClientIdentifier, QualityOfService> {
         self._search(&(*name).split("/").collect::<Vec<&str>>(), 0)
     }
 }
@@ -210,11 +170,14 @@ impl LocalRouteNode {
 
 pub struct LocalRoutes {
     // For topic filters
+    //   {user_id => routes}
     filter_routes: HashMap<u32, LocalRouteNode>,
     // For topic names
-    name_routes: HashMap<u32, HashMap<TopicName, HashMap<String, QualityOfService>>>,
+    //   {user_id => topic_names}
+    name_routes: HashMap<u32, HashMap<TopicName, HashMap<ClientIdentifier, QualityOfService>>>,
     // For remove topic-names and topic-filters
-    client_topics: HashMap<u32, HashMap<String, HashSet<Topic>>>,
+    //   {user_id => topics}
+    client_topics: HashMap<u32, HashMap<ClientIdentifier, HashSet<Topic>>>,
 }
 
 /// Router thread
@@ -226,28 +189,28 @@ impl LocalRoutes {
     pub fn new() -> LocalRoutes {
         LocalRoutes {
             filter_routes: HashMap::<u32, LocalRouteNode>::new(),
-            name_routes: HashMap::<u32, HashMap<TopicName, HashMap<String, QualityOfService>>>::new(),
-            client_topics: HashMap::<u32, HashMap<String, HashSet<Topic>>>::new()
+            name_routes: HashMap::<u32, HashMap<TopicName, HashMap<ClientIdentifier, QualityOfService>>>::new(),
+            client_topics: HashMap::<u32, HashMap<ClientIdentifier, HashSet<Topic>>>::new()
         }
     }
 
     fn insert_topic(&mut self, user_id: u32, topic: &Topic,
-                    client_identifier: &str, qos: QualityOfService) -> bool {
+                    client_identifier: &ClientIdentifier, qos: QualityOfService) -> bool {
         if !self.filter_routes.contains_key(&user_id) {
             self.filter_routes.insert(user_id, LocalRouteNode::new());
         }
         if !self.name_routes.contains_key(&user_id) {
-            self.name_routes.insert(user_id, HashMap::<TopicName, HashMap<String, QualityOfService>>::new());
+            self.name_routes.insert(user_id, HashMap::<TopicName, HashMap<ClientIdentifier, QualityOfService>>::new());
         }
         if !self.client_topics.contains_key(&user_id) {
-            self.client_topics.insert(user_id, HashMap::<String, HashSet<Topic>>::new());
+            self.client_topics.insert(user_id, HashMap::<ClientIdentifier, HashSet<Topic>>::new());
         }
         let mut filter_routes = self.filter_routes.get_mut(&user_id).unwrap();
         let mut name_routes = self.name_routes.get_mut(&user_id).unwrap();
         let mut client_topics = self.client_topics.get_mut(&user_id).unwrap();
 
         if !client_topics.contains_key(client_identifier) {
-            client_topics.insert(client_identifier.to_owned(), HashSet::<Topic>::new());
+            client_topics.insert(client_identifier.clone(), HashSet::<Topic>::new());
         }
         client_topics.get_mut(client_identifier).unwrap()
             .insert(topic.clone());
@@ -258,7 +221,7 @@ impl LocalRoutes {
             }
             &Topic::Name(ref topic_name) => {
                 if !name_routes.contains_key(topic_name) {
-                    name_routes.insert(topic_name.clone(), HashMap::<String, QualityOfService>::new());
+                    name_routes.insert(topic_name.clone(), HashMap::<ClientIdentifier, QualityOfService>::new());
                 }
                 name_routes.get_mut(topic_name).unwrap()
                     .insert(client_identifier.to_owned(), qos).is_none()
@@ -266,7 +229,7 @@ impl LocalRoutes {
         }
     }
 
-    fn remove_topic(&mut self, user_id: u32, topic: &Topic, client_identifier: &str) {
+    fn remove_topic(&mut self, user_id: u32, topic: &Topic, client_identifier: &ClientIdentifier) {
         if let Some(ref mut client_topics) = self.client_topics.get_mut(&user_id) {
             match client_topics.get_mut(client_identifier) {
                 Some(ref mut topic_name_set) => topic_name_set.remove(topic),
@@ -290,7 +253,7 @@ impl LocalRoutes {
         }
     }
 
-    fn remove_all_topics(&mut self, user_id: u32, client_identifier: &str) -> usize {
+    fn remove_all_topics(&mut self, user_id: u32, client_identifier: &ClientIdentifier) -> usize {
         if let Some(ref mut client_topics) = self.client_topics.get_mut(&user_id) {
             let removed_count = match client_topics.get_mut(client_identifier) {
                 Some(ref mut topic_name_set) => {
@@ -323,8 +286,8 @@ impl LocalRoutes {
         } else { 0 }
     }
 
-    fn search(&self, user_id: u32, topic_name: &TopicName) -> HashMap<String, QualityOfService> {
-        let mut clients = HashMap::<String, QualityOfService>::new();
+    fn search(&self, user_id: u32, topic_name: &TopicName) -> HashMap<ClientIdentifier, QualityOfService> {
+        let mut clients = HashMap::<ClientIdentifier, QualityOfService>::new();
         if let Some(ref name_routes) = self.name_routes.get(&user_id) {
             if let Some(client_map) = name_routes.get(topic_name) {
                 clients.extend(client_map.clone());

@@ -22,7 +22,7 @@ use mqtt::packet::{
 use mqtt::packet::suback::{SubscribeReturnCode};
 use mqtt::control::{FixedHeader, ConnectReturnCode};
 
-use super::{ClientSessionMsg, ClientConnectionMsg, LocalRouterMsg,
+use super::{ClientIdentifier, ClientSessionMsg, ClientConnectionMsg, LocalRouterMsg,
             SessionTimerAction, SessionTimerPayload, SessionTimerPacketType};
 use store::{GlobalRetainMsg};
 
@@ -34,9 +34,9 @@ pub fn run(
     local_router_tx: Sender<LocalRouterMsg>,
     global_retain_tx: Sender<GlobalRetainMsg>,
 ) {
-    let mut addrs = HashMap::<(u32, String), SocketAddr>::new();
+    let mut addrs = HashMap::<(u32, ClientIdentifier), SocketAddr>::new();
     let mut sessions = HashMap::<SocketAddr, Session>::new();
-    let mut persistents = HashMap::<(u32, String), PersistentSession>::new();
+    let mut persistents = HashMap::<(u32, ClientIdentifier), PersistentSession>::new();
     // TODO: Read timeouts from config file
     let recv_packet_timeout = Duration::from_secs(20);
     let default_keep_alive = Duration::from_secs(30); // aws-iot: 5 => 1200 seconds
@@ -157,7 +157,7 @@ pub fn run(
                     }
 
                 } else {
-                    warn!("[ClientSessionMsg::Publish]: Can find addr for >> user_id={}, client_identifier={}",
+                    warn!("[ClientSessionMsg::Publish]: Can find addr for >> user_id={}, client_identifier={:?}",
                           user_id, client_identifier);
                 }
 
@@ -165,7 +165,7 @@ pub fn run(
                     if let Some(mut persistent) = persistents.get_mut(&(user_id, client_identifier.clone())){
                         persistent.add_offline_msg(&packet, subscribe_qos);
                     } else {
-                        error!("[ClientSessionMsg::Publish]: offline but no persistent found: user_id={}, client_identifier={}",
+                        error!("[ClientSessionMsg::Publish]: offline but no persistent found: user_id={}, client_identifier={:?}",
                                user_id, &client_identifier);
                     }
                 }
@@ -347,9 +347,9 @@ impl Session {
         } else { None }
     }
 
-    fn client_identifier(&self) -> Option<String> {
+    fn client_identifier(&self) -> Option<ClientIdentifier> {
         if let Some(ref persistent) = self.persistent {
-            Some(persistent.client_identifier.clone())
+            Some(ClientIdentifier(persistent.client_identifier.clone()))
         } else { None }
     }
 
@@ -521,8 +521,8 @@ impl Session {
     }
 
     pub fn recv_packet(&mut self,
-                       addrs: &mut HashMap<(u32, String), SocketAddr>,
-                       persistents: &mut HashMap<(u32, String), PersistentSession>,
+                       addrs: &mut HashMap<(u32, ClientIdentifier), SocketAddr>,
+                       persistents: &mut HashMap<(u32, ClientIdentifier), PersistentSession>,
                        addr: SocketAddr, data: Vec<u8>, max_offline_msgs: u32) {
         // Append data to session.buf
         self.buf.get_mut().extend_from_slice(data.as_slice());
@@ -603,7 +603,7 @@ impl Session {
                                     self.client_connection_tx.clone().send(msg).wait().unwrap();
                                 } else {
                                     self.connected = true;
-                                    let persistent = persistents.remove(&(user_id, client_identifier.clone()));
+                                    let persistent = persistents.remove(&(user_id, ClientIdentifier(client_identifier.clone())));
                                     let mut session_present = false;
                                     self.persistent = if !pkt.clean_session() && persistent.is_some() {
                                         info!("[ConnectPacket]: use OLD persistent, client_id={:?}", client_identifier);
@@ -613,7 +613,7 @@ impl Session {
                                         info!("[ConnectPacket]: use NEW persistent, client_id={:?}", client_identifier);
                                         Some(PersistentSession::new(user_id, client_identifier.clone(), max_offline_msgs))
                                     };
-                                    addrs.insert((user_id, client_identifier), addr);
+                                    addrs.insert((user_id, ClientIdentifier(client_identifier)), addr);
                                     let keep_alive = (pkt.keep_alive() as f64 * 1.5 ) as u64;
                                     if keep_alive > 0 && keep_alive < self.keep_alive_timeout.as_secs() {
                                         self.keep_alive_timeout = Duration::from_secs(keep_alive);
