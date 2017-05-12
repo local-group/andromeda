@@ -16,3 +16,6 @@ pub enum GlobalRetainMsg {
     Remove(u32, String),
     MatchAll(u32, SocketAddr, Topic, QualityOfService)
 }
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+pub struct HubNode;
