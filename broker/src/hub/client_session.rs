@@ -25,6 +25,7 @@ use mqtt::control::{FixedHeader, ConnectReturnCode};
 use super::{ClientIdentifier, ClientSessionMsg, ClientConnectionMsg, LocalRouterMsg,
             SessionTimerAction, SessionTimerPayload, SessionTimerPacketType};
 use store::{GlobalRetainMsg};
+use common::{UserId};
 
 
 pub fn run(
@@ -34,9 +35,9 @@ pub fn run(
     local_router_tx: Sender<LocalRouterMsg>,
     global_retain_tx: Sender<GlobalRetainMsg>,
 ) {
-    let mut addrs = HashMap::<(u32, ClientIdentifier), SocketAddr>::new();
+    let mut addrs = HashMap::<(UserId, ClientIdentifier), SocketAddr>::new();
     let mut sessions = HashMap::<SocketAddr, Session>::new();
-    let mut persistents = HashMap::<(u32, ClientIdentifier), PersistentSession>::new();
+    let mut persistents = HashMap::<(UserId, ClientIdentifier), PersistentSession>::new();
     // TODO: Read timeouts from config file
     let recv_packet_timeout = Duration::from_secs(20);
     let default_keep_alive = Duration::from_secs(30); // aws-iot: 5 => 1200 seconds
@@ -157,7 +158,7 @@ pub fn run(
                     }
 
                 } else {
-                    warn!("[ClientSessionMsg::Publish]: Can find addr for >> user_id={}, client_identifier={:?}",
+                    warn!("[ClientSessionMsg::Publish]: Can find addr for >> user_id={:?}, client_identifier={:?}",
                           user_id, client_identifier);
                 }
 
@@ -165,7 +166,7 @@ pub fn run(
                     if let Some(mut persistent) = persistents.get_mut(&(user_id, client_identifier.clone())){
                         persistent.add_offline_msg(&packet, subscribe_qos);
                     } else {
-                        error!("[ClientSessionMsg::Publish]: offline but no persistent found: user_id={}, client_identifier={:?}",
+                        error!("[ClientSessionMsg::Publish]: offline but no persistent found: user_id={:?}, client_identifier={:?}",
                                user_id, &client_identifier);
                     }
                 }
@@ -252,7 +253,7 @@ pub fn run(
 }
 
 pub struct PersistentSession {
-    user_id: u32,
+    user_id: UserId,
     client_identifier: String,
 
     // Packet Identifier
@@ -269,7 +270,7 @@ pub struct PersistentSession {
 
 impl PersistentSession {
 
-    fn new(user_id: u32, client_identifier: String, max_offline_msgs: u32) -> PersistentSession {
+    fn new(user_id: UserId, client_identifier: String, max_offline_msgs: u32) -> PersistentSession {
         PersistentSession {
             user_id: user_id,
             client_identifier: client_identifier,
@@ -341,7 +342,7 @@ impl Session {
         }
     }
 
-    fn user_id(&self) -> Option<u32> {
+    fn user_id(&self) -> Option<UserId> {
         if let Some(ref persistent) = self.persistent {
             Some(persistent.user_id)
         } else { None }
@@ -521,8 +522,8 @@ impl Session {
     }
 
     pub fn recv_packet(&mut self,
-                       addrs: &mut HashMap<(u32, ClientIdentifier), SocketAddr>,
-                       persistents: &mut HashMap<(u32, ClientIdentifier), PersistentSession>,
+                       addrs: &mut HashMap<(UserId, ClientIdentifier), SocketAddr>,
+                       persistents: &mut HashMap<(UserId, ClientIdentifier), PersistentSession>,
                        addr: SocketAddr, data: Vec<u8>, max_offline_msgs: u32) {
         // Append data to session.buf
         self.buf.get_mut().extend_from_slice(data.as_slice());
@@ -592,7 +593,7 @@ impl Session {
                                 self.client_connection_tx.clone().send(msg).wait().unwrap();
                             } else {
                                 // TODO: how to set `user_id` ???
-                                let user_id = 0;
+                                let user_id = UserId(0);
                                 let client_identifier = pkt.client_identifier().to_string();
                                 if client_identifier.is_empty() && !pkt.clean_session() {
                                     // <Spec>: [MQTT-3.1.3-8]

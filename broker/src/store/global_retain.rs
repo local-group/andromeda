@@ -1,10 +1,11 @@
 
+use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::collections::{HashMap};
 use std::sync::mpsc::{Receiver, Sender};
 
 use mqtt::packet::{PublishPacket};
 
-use common::{Topic};
+use common::{Topic, UserId, ClientIdentifier};
 use hub;
 use super::{GlobalRetainMsg};
 
@@ -12,7 +13,7 @@ pub fn run(
     global_retain_rx: Receiver<GlobalRetainMsg>,
     client_session_tx: Sender<hub::ClientSessionMsg>
 ) {
-    let mut retains = HashMap::<u32, RetainNode>::new();
+    let mut retains = HashMap::<UserId, RetainNode>::new();
     loop {
         let msg = global_retain_rx.recv().unwrap();
         match msg {
@@ -28,10 +29,12 @@ pub fn run(
                     node.remove(&topic_name);
                 }
             }
-            GlobalRetainMsg::MatchAll(user_id, addr, topic, qos) => {
+            GlobalRetainMsg::MatchAll(user_id, client_identifier, topic, qos) => {
                 if let Some(ref node) = retains.get(&user_id) {
                     let packets = node.match_all(&topic);
-                    let msg = hub::ClientSessionMsg::RetainPackets(user_id, addr, packets, qos);
+                    // FIXME: addr, client_identifier
+                    let msg = hub::ClientSessionMsg::RetainPackets(
+                        user_id, SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0), packets, qos);
                     client_session_tx.send(msg).unwrap();
                 }
             }

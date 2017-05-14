@@ -1,5 +1,11 @@
 #[macro_use]
 extern crate log;
+extern crate bytes;
+extern crate byteorder;
+extern crate bincode;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde;
 extern crate env_logger;
 extern crate mqtt;
 extern crate threadpool;

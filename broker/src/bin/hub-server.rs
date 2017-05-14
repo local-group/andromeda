@@ -2,7 +2,6 @@
 extern crate log;
 extern crate broker;
 extern crate env_logger;
-extern crate pretty_env_logger;
 extern crate native_tls;
 extern crate time;
 extern crate ansi_term;
@@ -48,6 +47,7 @@ fn main() {
     builder.init().unwrap();
 
     let addr = "127.0.0.1:8883";
+    let store_addr = "127.0.0.1:8884";
     debug!("Listening on: {:?}", addr);
     let tls_acceptor = env::args().nth(1).map(|file_path| {
         debug!("pkcs12 file path: {}", file_path);

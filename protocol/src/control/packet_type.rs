@@ -1,14 +1,14 @@
 use std::error::Error;
 use std::fmt;
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
+#[derive(Debug, Eq, Serialize, Deserialize, PartialEq, Copy, Clone, Hash)]
 pub struct PacketType {
     pub control_type: ControlType,
     pub flags: u8,
 }
 
 #[repr(u8)]
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
+#[derive(Debug, Eq, Serialize, Deserialize, PartialEq, Copy, Clone, Hash)]
 pub enum ControlType {
     /// Client request to connect to Server
     Connect                         = value::CONNECT,

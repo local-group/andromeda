@@ -21,7 +21,7 @@ use {Encodable, Decodable};
 /// | Remaining Length ...                                |
 /// +-----------------------------------------------------+
 /// ```
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, Serialize, Deserialize, PartialEq, Hash)]
 pub struct FixedHeader {
     /// Packet Type
     pub packet_type: PacketType,

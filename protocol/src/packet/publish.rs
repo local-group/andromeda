@@ -13,7 +13,7 @@ pub enum QoSWithPacketIdentifier {
     Level2(u16),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, Serialize, Deserialize, PartialEq, Clone)]
 pub struct PublishPacket {
     fixed_header: FixedHeader,
     topic_name: TopicName,

@@ -12,11 +12,7 @@ use std::time::Instant;
 
 use mqtt::{QualityOfService};
 use mqtt::packet::{PublishPacket, SubscribePacket, UnsubscribePacket};
-
-pub struct ClientId {
-    pub user_id: u32,
-    pub client_identifier: String
-}
+use common::{UserId, ClientIdentifier};
 
 /// Message structure send to `client_connection`
 #[derive(Clone)]
@@ -26,17 +22,14 @@ pub enum ClientConnectionMsg {
     // Shutdown
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub struct ClientIdentifier(pub String);
-
 #[derive(Clone)]
 pub enum ClientSessionMsg {
     Data(SocketAddr, Vec<u8>),
     // (user_id, client_identifier, qos, packet)
-    Publish(u32, ClientIdentifier, QualityOfService, PublishPacket),
+    Publish(UserId, ClientIdentifier, QualityOfService, PublishPacket),
     ClientDisconnect(SocketAddr, String),
     // (user_id, addr, packets, subscribe_qos)
-    RetainPackets(u32, SocketAddr, Vec<PublishPacket>, QualityOfService),
+    RetainPackets(UserId, SocketAddr, Vec<PublishPacket>, QualityOfService),
     Timeout(SessionTimerPayload)
     // Shutdown
 }
@@ -44,13 +37,13 @@ pub enum ClientSessionMsg {
 #[derive(Debug, Clone)]
 pub enum LocalRouterMsg {
     // Forward publish message to `router_follower` or `local_router`
-    ForwardPublish(u32, PublishPacket),
+    ForwardPublish(UserId, PublishPacket),
     // Receive publish packet from `router_follower` or `local_router`
-    Publish(u32, PublishPacket),
+    Publish(UserId, PublishPacket),
     // (user_id, client_identifier, packet)
-    Subscribe(u32, ClientIdentifier, SocketAddr, SubscribePacket),
-    Unsubscribe(u32, ClientIdentifier, UnsubscribePacket),
-    ClientDisconnect(u32, ClientIdentifier),
+    Subscribe(UserId, ClientIdentifier, SocketAddr, SubscribePacket),
+    Unsubscribe(UserId, ClientIdentifier, UnsubscribePacket),
+    ClientDisconnect(UserId, ClientIdentifier),
     // Shutdown
 }
 

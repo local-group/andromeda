@@ -7,9 +7,9 @@ use futures::sync::mpsc;
 use mqtt::packet::{Packet};
 use mqtt::{TopicFilter, TopicName, QualityOfService};
 
-use common::{Topic, RouteKey};
+use common::{Topic, RouteKey, UserId, ClientIdentifier};
 use store::{GlobalRetainMsg};
-use super::{ClientSessionMsg, LocalRouterMsg, ClientIdentifier};
+use super::{ClientSessionMsg, LocalRouterMsg};
 
 
 pub fn run(
@@ -40,7 +40,7 @@ pub fn run(
                     let topic = Topic::from_filter(topic_filter);
                     let _ = local_routes.insert_topic(user_id, &topic, &client_identifier, qos);
                     // <Spec>: [MQTT-3.8.4-3] "Any existing retained messages matching the Topic Filter MUST be re-sent"
-                    let msg = GlobalRetainMsg::MatchAll(user_id, addr, topic, qos);
+                    let msg = GlobalRetainMsg::MatchAll(user_id, client_identifier.clone(), topic, qos);
                     global_retain_tx.send(msg).unwrap();
                 }
             }
@@ -171,13 +171,13 @@ impl LocalRouteNode {
 pub struct LocalRoutes {
     // For topic filters
     //   {user_id => routes}
-    filter_routes: HashMap<u32, LocalRouteNode>,
+    filter_routes: HashMap<UserId, LocalRouteNode>,
     // For topic names
     //   {user_id => topic_names}
-    name_routes: HashMap<u32, HashMap<TopicName, HashMap<ClientIdentifier, QualityOfService>>>,
+    name_routes: HashMap<UserId, HashMap<TopicName, HashMap<ClientIdentifier, QualityOfService>>>,
     // For remove topic-names and topic-filters
     //   {user_id => topics}
-    client_topics: HashMap<u32, HashMap<ClientIdentifier, HashSet<Topic>>>,
+    client_topics: HashMap<UserId, HashMap<ClientIdentifier, HashSet<Topic>>>,
 }
 
 /// Router thread
@@ -188,13 +188,13 @@ pub struct LocalRoutes {
 impl LocalRoutes {
     pub fn new() -> LocalRoutes {
         LocalRoutes {
-            filter_routes: HashMap::<u32, LocalRouteNode>::new(),
-            name_routes: HashMap::<u32, HashMap<TopicName, HashMap<ClientIdentifier, QualityOfService>>>::new(),
-            client_topics: HashMap::<u32, HashMap<ClientIdentifier, HashSet<Topic>>>::new()
+            filter_routes: HashMap::<UserId, LocalRouteNode>::new(),
+            name_routes: HashMap::<UserId, HashMap<TopicName, HashMap<ClientIdentifier, QualityOfService>>>::new(),
+            client_topics: HashMap::<UserId, HashMap<ClientIdentifier, HashSet<Topic>>>::new()
         }
     }
 
-    fn insert_topic(&mut self, user_id: u32, topic: &Topic,
+    fn insert_topic(&mut self, user_id: UserId, topic: &Topic,
                     client_identifier: &ClientIdentifier, qos: QualityOfService) -> bool {
         if !self.filter_routes.contains_key(&user_id) {
             self.filter_routes.insert(user_id, LocalRouteNode::new());
@@ -229,7 +229,7 @@ impl LocalRoutes {
         }
     }
 
-    fn remove_topic(&mut self, user_id: u32, topic: &Topic, client_identifier: &ClientIdentifier) {
+    fn remove_topic(&mut self, user_id: UserId, topic: &Topic, client_identifier: &ClientIdentifier) {
         if let Some(ref mut client_topics) = self.client_topics.get_mut(&user_id) {
             match client_topics.get_mut(client_identifier) {
                 Some(ref mut topic_name_set) => topic_name_set.remove(topic),
@@ -253,7 +253,7 @@ impl LocalRoutes {
         }
     }
 
-    fn remove_all_topics(&mut self, user_id: u32, client_identifier: &ClientIdentifier) -> usize {
+    fn remove_all_topics(&mut self, user_id: UserId, client_identifier: &ClientIdentifier) -> usize {
         if let Some(ref mut client_topics) = self.client_topics.get_mut(&user_id) {
             let removed_count = match client_topics.get_mut(client_identifier) {
                 Some(ref mut topic_name_set) => {
@@ -286,7 +286,7 @@ impl LocalRoutes {
         } else { 0 }
     }
 
-    fn search(&self, user_id: u32, topic_name: &TopicName) -> HashMap<ClientIdentifier, QualityOfService> {
+    fn search(&self, user_id: UserId, topic_name: &TopicName) -> HashMap<ClientIdentifier, QualityOfService> {
         let mut clients = HashMap::<ClientIdentifier, QualityOfService>::new();
         if let Some(ref name_routes) = self.name_routes.get(&user_id) {
             if let Some(client_map) = name_routes.get(topic_name) {

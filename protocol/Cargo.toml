@@ -9,6 +9,8 @@ repository = "https://github.com/zonyitoo/mqtt-rs"
 
 [dependencies]
 byteorder = "^0.3.13"
+serde = "1.0"
+serde_derive = "1.0"
 log = "^0.3.2"
 regex = "^0.1.41"
 

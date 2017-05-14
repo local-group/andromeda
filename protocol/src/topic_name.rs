@@ -11,7 +11,7 @@ use {Encodable, Decodable};
 
 const TOPIC_NAME_VALIDATE_REGEX: &'static str = r"^(\$?[^/\$]+)?(/[^/\$]+)*$";
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+#[derive(Debug, Eq, Serialize, Deserialize, PartialEq, Clone, Hash)]
 pub struct TopicName(String);
 
 impl TopicName {

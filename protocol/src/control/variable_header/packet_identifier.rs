@@ -6,7 +6,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use control::variable_header::VariableHeaderError;
 use {Encodable, Decodable};
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
+#[derive(Debug, Eq, Serialize, Deserialize, PartialEq, Copy, Clone, Hash)]
 pub struct PacketIdentifier(pub u16);
 
 impl<'a> Encodable<'a> for PacketIdentifier {
