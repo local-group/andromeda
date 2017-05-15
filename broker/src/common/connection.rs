@@ -28,15 +28,15 @@ fn reuse_port(builder: &TcpBuilder) -> io::Result<&TcpBuilder> {
     Ok(builder)
 }
 
-pub trait MsgFromConnection {
+pub trait MsgFromNet {
     fn data(addr: SocketAddr, buf: Vec<u8>) -> Self;
     fn disconnect(addr: SocketAddr, msg: String) -> Self;
 }
 
 #[derive(Debug, Clone)]
-pub enum ToConnectionMsg {
+pub enum ToNetMsg {
     Data(SocketAddr, Vec<u8>),
-    DisconnectClient(SocketAddr, String)
+    Disconnect(SocketAddr, String)
 }
 
 fn handle_socket<S, Msg>(
@@ -48,7 +48,7 @@ fn handle_socket<S, Msg>(
 )
     -> Result<(), ()>
     where S: Io + 'static,
-          Msg: MsgFromConnection + 'static
+          Msg: MsgFromNet + 'static
 {
     debug!("> socket.incoming().addr = {:?}", addr);
     let (reader, writer) = socket.split();
@@ -122,24 +122,24 @@ fn handle_socket<S, Msg>(
     Ok(())
 }
 
-pub struct ConnectionMgr {
+pub struct NetServer {
     addr: SocketAddr,
     tls_acceptor: Option<TlsAcceptor>,
 }
 
-impl ConnectionMgr {
-    pub fn new(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) -> ConnectionMgr {
-        ConnectionMgr{
+impl NetServer {
+    pub fn new(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) -> NetServer {
+        NetServer{
             addr: addr,
             tls_acceptor: tls_acceptor,
         }
     }
 
-    pub fn start_loop<M>(self, conn_rx: mpsc::Receiver<ToConnectionMsg>, session_tx: Sender<M>)
-        where M: MsgFromConnection + 'static
+    pub fn start_loop<M>(self, server_rx: mpsc::Receiver<ToNetMsg>, session_tx: Sender<M>)
+        where M: MsgFromNet + 'static
     {
         let addr = self.addr;
-        let conn_rx = conn_rx.map_err(|_| panic!());
+        let server_rx = server_rx.map_err(|_| panic!());
 
         let builder = TcpBuilder::new_v4()
             .unwrap_or_else(|err| panic!("Failed to create listener, {}", err));
@@ -164,10 +164,10 @@ impl ConnectionMgr {
         // Forward data from session to connection.
         let cloned_connections = connections.clone();
         let cloned_session_tx = session_tx.clone();
-        let inbox = conn_rx.for_each(move |msg| {
+        let inbox = server_rx.for_each(move |msg| {
             debug!("> inbox.msg = {:?}", msg);
             match msg {
-                ToConnectionMsg::Data(addr, data) => {
+                ToNetMsg::Data(addr, data) => {
                     let mut connections = cloned_connections.borrow_mut();
                     if let Some(tx) = connections.get_mut(&addr) {
                         tx.send(data).unwrap();
@@ -176,7 +176,7 @@ impl ConnectionMgr {
                         cloned_session_tx.send(m).unwrap();
                     }
                 }
-                ToConnectionMsg::DisconnectClient(addr, _) => {
+                ToNetMsg::Disconnect(addr, _) => {
                     let mut connections = cloned_connections.borrow_mut();
                     if let Some(tx) = connections.get_mut(&addr) {
                         tx.send(Vec::new()).unwrap();

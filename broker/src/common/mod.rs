@@ -10,8 +10,8 @@ pub use self::route::{
     RouteKey, RouteNode, Routes
 };
 pub use self::connection::{
-    MsgFromConnection, ToConnectionMsg,
-    ConnectionMgr
+    MsgFromNet, ToNetMsg,
+    NetServer
 };
 
 

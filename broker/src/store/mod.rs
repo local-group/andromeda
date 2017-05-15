@@ -15,7 +15,7 @@ use native_tls::{TlsAcceptor};
 use futures::sync::mpsc;
 
 use common::{UserId, ClientIdentifier, Topic,
-             MsgFromConnection, ToConnectionMsg, ConnectionMgr};
+             MsgFromNet, ToNetMsg, NetServer};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct HubNode(pub SocketAddr);
@@ -31,7 +31,7 @@ pub enum StoreSessionMsg {
     Retains(SocketAddr, UserId, ClientIdentifier, Vec<PublishPacket>, QualityOfService)
 }
 
-impl MsgFromConnection for StoreSessionMsg {
+impl MsgFromNet for StoreSessionMsg {
     fn data(addr: SocketAddr, buf: Vec<u8>) -> StoreSessionMsg {
         StoreSessionMsg::Data(addr, buf)
     }
@@ -62,25 +62,25 @@ pub enum GlobalRetainMsg {
 pub fn run(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) {
     let (session_tx, session_rx) = channel::<StoreSessionMsg>();
     let (router_tx, router_rx) = channel::<GlobalRouterMsg>();
-    let (conn_tx, conn_rx) = mpsc::channel::<ToConnectionMsg>(1024);
+    let (server_tx, server_rx) = mpsc::channel::<ToNetMsg>(1024);
     // Session
-    let cloned_conn_tx = conn_tx.clone();
+    let cloned_server_tx = server_tx.clone();
     let cloned_router_tx = router_tx.clone();
     let session_thread = thread::spawn(move || {
-        store_session::run(session_rx, cloned_conn_tx, cloned_router_tx);
+        store_session::run(session_rx, cloned_server_tx, cloned_router_tx);
     });
     // Router
     let cloned_session_tx = session_tx.clone();
     let router_thread = thread::spawn(move || {
         global_router::run_epoll(router_rx, cloned_session_tx);
     });
-    // Connection Manager
-    let conn_mgr = ConnectionMgr::new(addr, tls_acceptor);
+    // Net server
+    let server = NetServer::new(addr, tls_acceptor);
     let cloned_session_tx = session_tx.clone();
-    let conn_thread = thread::spawn(move || {
-        conn_mgr.start_loop(conn_rx, cloned_session_tx);
+    let server_thread = thread::spawn(move || {
+        server.start_loop(server_rx, cloned_session_tx);
     });
-    for handle in vec![session_thread, router_thread, conn_thread] {
+    for handle in vec![session_thread, router_thread, server_thread] {
         handle.join().unwrap();
     }
 }

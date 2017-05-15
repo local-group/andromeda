@@ -14,11 +14,11 @@ use futures::{Sink, Future};
 use futures::sync::mpsc;
 
 use super::{StoreSessionMsg, GlobalRouterMsg};
-use common::{ToConnectionMsg, StoreRequest, StoreResponse};
+use common::{ToNetMsg, StoreRequest, StoreResponse};
 
 pub fn run(
     session_rx: Receiver<StoreSessionMsg>,
-    conn_tx: mpsc::Sender<ToConnectionMsg>,
+    server_tx: mpsc::Sender<ToNetMsg>,
     router_tx: Sender<GlobalRouterMsg>,
 ) {
     let mut sessions = HashMap::<SocketAddr, Session>::new();
@@ -27,7 +27,7 @@ pub fn run(
             StoreSessionMsg::Data(addr, data) => {
                 if !sessions.contains_key(&addr) {
                     sessions.insert(addr, Session::new(
-                        addr, conn_tx.clone(), router_tx.clone()
+                        addr, server_tx.clone(), router_tx.clone()
                     ));
                 }
                 let mut session = sessions.get_mut(&addr).unwrap();
@@ -61,21 +61,21 @@ pub struct Session {
     // Data length
     header: Option<u64>,
     buf: BytesMut,
-    conn_tx: mpsc::Sender<ToConnectionMsg>,
+    server_tx: mpsc::Sender<ToNetMsg>,
     router_tx: Sender<GlobalRouterMsg>,
 }
 
 impl Session {
     fn new(
         addr: SocketAddr,
-        conn_tx: mpsc::Sender<ToConnectionMsg>,
+        server_tx: mpsc::Sender<ToNetMsg>,
         router_tx: Sender<GlobalRouterMsg>
     ) -> Session {
         Session {
             addr: addr,
             buf: BytesMut::with_capacity(2048),
             header: None,
-            conn_tx: conn_tx,
+            server_tx: server_tx,
             router_tx: router_tx
         }
     }
@@ -129,7 +129,7 @@ impl Session {
 
     fn handle_response(&self, response: StoreResponse) {
         let data: Vec<u8> = bincode::serialize(&response, Infinite).unwrap();
-        let msg = ToConnectionMsg::Data(self.addr, data);
-        self.conn_tx.clone().send(msg).wait().unwrap();
+        let msg = ToNetMsg::Data(self.addr, data);
+        self.server_tx.clone().send(msg).wait().unwrap();
     }
 }

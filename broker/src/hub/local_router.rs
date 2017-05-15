@@ -40,7 +40,7 @@ pub fn run(
                     let topic = Topic::from_filter(topic_filter);
                     let _ = local_routes.insert_topic(user_id, &topic, &client_identifier, qos);
                     // <Spec>: [MQTT-3.8.4-3] "Any existing retained messages matching the Topic Filter MUST be re-sent"
-                    let msg = GlobalRetainMsg::MatchAll(user_id, client_identifier.clone(), topic, qos);
+                    let msg = GlobalRetainMsg::MatchAll(user_id, addr, topic, qos);
                     global_retain_tx.send(msg).unwrap();
                 }
             }
