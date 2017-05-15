@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::iter;
@@ -12,8 +11,8 @@ use futures::{Future, Stream};
 use futures::stream::{self};
 use futures::sync::mpsc;
 use tokio_core::reactor::{Core, Handle};
-use tokio_core::io::{self as tokio_io, Io};
 use tokio_core::net::{TcpListener};
+use tokio_io::{self, AsyncRead, AsyncWrite};
 use tokio_tls::{TlsAcceptorExt};
 use native_tls::{TlsAcceptor};
 
@@ -39,7 +38,7 @@ pub enum ToNetMsg {
     Disconnect(SocketAddr, String)
 }
 
-fn handle_socket<S, Msg>(
+fn handle_server_socket<S, Msg>(
     addr: SocketAddr,
     socket: S,
     tx: Sender<Msg>,
@@ -47,7 +46,7 @@ fn handle_socket<S, Msg>(
     connections: Rc<RefCell<HashMap<SocketAddr, mpsc::UnboundedSender<Vec<u8>>>>>
 )
     -> Result<(), ()>
-    where S: Io + 'static,
+    where S: AsyncRead + AsyncWrite + 'static,
           Msg: MsgFromNet + 'static
 {
     debug!("> socket.incoming().addr = {:?}", addr);
@@ -64,8 +63,7 @@ fn handle_socket<S, Msg>(
     let cloned_tx = tx.clone();
     let iter = stream::iter(iter::repeat(()).map(Ok::<(), Error>));
     let socket_reader = iter.fold(reader, move |reader, _| {
-        // TODO: read_exact(reader, [u8; 1]), the performance is really bad!!!
-        let data = tokio_io::read(reader, [0; 32]);
+        let data = tokio_io::io::read(reader, vec![0; 2048]);
         let data = data.and_then(|(reader, buf, n)| {
             // debug!("> Read {} bytes({:?}) from client", buf.len(), buf);
             if n == 0 {
@@ -87,7 +85,7 @@ fn handle_socket<S, Msg>(
     // Receive data from `inbox` then write to socket
     let socket_writer = inner_rx.fold(writer, |writer, data| {
         debug!("> [server] Write all: {:?}", data);
-        tokio_io::write_all(writer, data)
+        tokio_io::io::write_all(writer, data)
             .and_then(|(writer, data)| {
                 if data.is_empty() {
                     // TODO:: need more general fix.
@@ -138,7 +136,6 @@ impl NetServer {
     pub fn start_loop<M>(self, server_rx: mpsc::Receiver<ToNetMsg>, session_tx: Sender<M>)
         where M: MsgFromNet + 'static
     {
-        let addr = self.addr;
         let server_rx = server_rx.map_err(|_| panic!());
 
         let builder = TcpBuilder::new_v4()
@@ -200,12 +197,12 @@ impl NetServer {
                             ()
                         })
                         .and_then(move |socket| {
-                            handle_socket(addr, socket, tx, cloned_handle, connections)
+                            handle_server_socket(addr, socket, tx, cloned_handle, connections)
                         });
                     handle.spawn(accept);
                 },
                 None => {
-                    let _ = handle_socket(addr, socket, tx, cloned_handle, connections);
+                    let _ = handle_server_socket(addr, socket, tx, cloned_handle, connections);
                 }
             };
             Ok(())

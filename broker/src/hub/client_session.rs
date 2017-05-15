@@ -6,9 +6,9 @@ use std::net::SocketAddr;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Sender, Receiver};
 
+use bytes::{BytesMut, BufMut};
 use futures::sync::mpsc;
 use futures::{Sink, Future};
-use tokio_core::io::{EasyBuf};
 
 use mqtt::{Encodable, Decodable, TopicName, QualityOfService};
 use mqtt::packet::{
@@ -305,7 +305,7 @@ impl PersistentSession {
 }
 
 pub struct Session {
-    buf: EasyBuf,
+    buf: BytesMut,
     addr: SocketAddr,
     recv_packet_timeout: Duration,
     keep_alive_timeout: Duration,
@@ -329,7 +329,7 @@ impl Session {
            local_router_tx: Sender<LocalRouterMsg>,
            global_retain_tx: Sender<GlobalRetainMsg>) -> Session {
         Session {
-            buf: EasyBuf::new(),
+            buf: BytesMut::with_capacity(2048),
             addr: addr,
             recv_packet_timeout: recv_packet_timeout,
             keep_alive_timeout: keep_alive_timeout,
@@ -528,22 +528,21 @@ impl Session {
                        persistents: &mut HashMap<(UserId, ClientIdentifier), PersistentSession>,
                        addr: SocketAddr, data: Vec<u8>, max_offline_msgs: u32) {
         // Append data to session.buf
-        self.buf.get_mut().extend_from_slice(data.as_slice());
+        self.buf.put(data);
         let mut decoded_packet_count = 0;
         loop {
             if self.fixed_header.is_none() {
                 let header_len = {
                     // Valid fixed header length: [1, 5]
-                    let buf_slice = self.buf.as_slice();
                     // [Values]:
                     //   None    => No enough bytes
                     //   Some(6) => Error fixed header
                     let mut rv: Option<usize> = None;
                     for i in 1..6 {
-                        if buf_slice.len() < i+1 {
+                        if self.buf.len() < i+1 {
                             break
                         }
-                        if buf_slice[i] & 0x80 == 0 {
+                        if self.buf[i] & 0x80 == 0 {
                             rv = Some(i + 1);
                             break
                         }
@@ -558,7 +557,7 @@ impl Session {
                         break;
                     }
                     // Decode packet fixed_header
-                    let header_buf = self.buf.drain_to(header_len);
+                    let header_buf = self.buf.split_to(header_len);
                     let mut bytes = header_buf.as_ref();
                     self.fixed_header = Some(FixedHeader::decode_with(&mut bytes, None).unwrap())
                 } else {

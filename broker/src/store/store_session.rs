@@ -7,9 +7,7 @@ use std::sync::mpsc::{Sender, Receiver};
 
 use bincode::{self, Infinite};
 use byteorder::{BigEndian, ReadBytesExt};
-use bytes::BytesMut;
-use bytes::buf::BufMut;
-use tokio_core::io::{EasyBuf};
+use bytes::{BytesMut, BufMut};
 use futures::{Sink, Future};
 use futures::sync::mpsc;
 

@@ -12,8 +12,8 @@ use futures::{Future, Stream};
 use futures::stream::{self};
 use futures::sync::mpsc;
 use tokio_core::reactor::{Core, Handle};
-use tokio_core::io::{self as tokio_io, Io};
 use tokio_core::net::{TcpListener};
+use tokio_io::{self, AsyncRead, AsyncWrite};
 use tokio_tls::{TlsAcceptorExt};
 use native_tls::{TlsAcceptor};
 
@@ -117,7 +117,7 @@ fn handle_socket<S>(
     connections: Rc<RefCell<HashMap<SocketAddr, mpsc::UnboundedSender<Vec<u8>>>>>
 )
     -> Result<(), ()>
-    where S: Io + 'static
+    where S: AsyncRead + AsyncWrite + 'static
 {
     debug!("> socket.incoming().addr = {:?}", addr);
     let (reader, writer) = socket.split();
@@ -133,8 +133,7 @@ fn handle_socket<S>(
     let cloned_client_session_tx = client_session_tx.clone();
     let iter = stream::iter(iter::repeat(()).map(Ok::<(), Error>));
     let socket_reader = iter.fold(reader, move |reader, _| {
-        // TODO: read_exact(reader, [u8; 1]), the performance is really bad!!!
-        let data = tokio_io::read(reader, [0; 32]);
+        let data = tokio_io::io::read(reader, vec![0; 2048]);
         let data = data.and_then(|(reader, buf, n)| {
             // debug!("> Read {} bytes({:?}) from client", buf.len(), buf);
             if n == 0 {
@@ -156,7 +155,7 @@ fn handle_socket<S>(
     // Receive data from `inbox` then write to socket
     let socket_writer = rx.fold(writer, |writer, data| {
         debug!("> [server] Write all: {:?}", data);
-        tokio_io::write_all(writer, data)
+        tokio_io::io::write_all(writer, data)
             .and_then(|(writer, data)| {
                 if data.is_empty() {
                     // TODO:: need more general fix.

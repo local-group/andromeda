@@ -1,5 +1,5 @@
 
-pub mod connection;
+pub mod net;
 pub mod route;
 
 use mqtt::{TopicName, TopicFilter, QualityOfService};
@@ -9,7 +9,7 @@ pub use self::route::{
     Peers, PeerMap, PeerSet,
     RouteKey, RouteNode, Routes
 };
-pub use self::connection::{
+pub use self::net::{
     MsgFromNet, ToNetMsg,
     NetServer
 };

@@ -12,6 +12,7 @@ extern crate threadpool;
 extern crate net2;
 extern crate mio;
 extern crate futures;
+extern crate tokio_io;
 extern crate tokio_core;
 extern crate native_tls;
 extern crate tokio_tls;
