@@ -172,20 +172,22 @@ pub fn run(
                 }
             }
             ClientSessionMsg::RetainPackets(_, addr, packets, subscribe_qos) => {
-                let mut session = sessions.get_mut(&addr).unwrap();
+                if let Some(mut session) = sessions.get_mut(&addr) {
+                    for mut packet in packets {
 
-                for mut packet in packets {
+                        // <Spec.RETAIN>:
+                        // =============
+                        // When sending a PUBLISH Packet to a Client the Server MUST set
+                        // the RETAIN flag to 1 if a message is sent as a result of a
+                        // new subscription being made by a Client [MQTT-3.3.1-8].
+                        packet.set_retain(true);
 
-                    // <Spec.RETAIN>:
-                    // =============
-                    // When sending a PUBLISH Packet to a Client the Server MUST set
-                    // the RETAIN flag to 1 if a message is sent as a result of a
-                    // new subscription being made by a Client [MQTT-3.3.1-8].
-                    packet.set_retain(true);
-
-                    // See: [MQTT-3.3.1-3]
-                    packet.set_dup(false);
-                    session.send_publish_with_qos(&mut packet, subscribe_qos, &client_connection_tx);
+                        // See: [MQTT-3.3.1-3]
+                        packet.set_dup(false);
+                        session.send_publish_with_qos(&mut packet, subscribe_qos, &client_connection_tx);
+                    }
+                } else {
+                    error!("[ClientSessionMsg::RetainPackets]: no session: addr={:?}", addr);
                 }
             }
             ClientSessionMsg::Timeout(payload) => {

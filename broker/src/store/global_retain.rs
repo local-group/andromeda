@@ -29,12 +29,11 @@ pub fn run(
                     node.remove(&topic_name);
                 }
             }
-            GlobalRetainMsg::MatchAll(user_id, client_identifier, topic, qos) => {
+            GlobalRetainMsg::MatchAll(user_id, addr, topic, qos) => {
                 if let Some(ref node) = retains.get(&user_id) {
                     let packets = node.match_all(&topic);
                     // FIXME: addr, client_identifier
-                    let msg = hub::ClientSessionMsg::RetainPackets(
-                        user_id, SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0), packets, qos);
+                    let msg = hub::ClientSessionMsg::RetainPackets(user_id, addr, packets, qos);
                     client_session_tx.send(msg).unwrap();
                 }
             }

@@ -56,7 +56,7 @@ pub enum GlobalRouterMsg {
 pub enum GlobalRetainMsg {
     Insert(UserId, PublishPacket),
     Remove(UserId, String),
-    MatchAll(UserId, ClientIdentifier, Topic, QualityOfService)
+    MatchAll(UserId, SocketAddr, Topic, QualityOfService)
 }
 
 pub fn run(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) {

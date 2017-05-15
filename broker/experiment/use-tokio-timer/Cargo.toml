@@ -1,0 +1,8 @@
+[package]
+name = "use_tokio_timer"
+version = "0.1.0"
+authors = ["thewawar <thewawar@gmail.com>"]
+
+[dependencies]
+futures = "0.1.13"
+tokio-timer = "0.1.1"

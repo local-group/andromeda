@@ -4,12 +4,9 @@ use std::net::SocketAddr;
 
 use mqtt::{TopicFilter, TopicName, QualityOfService};
 
+use broker::common::ClientIdentifier;
 use broker::hub::local_router::{LocalRouteNode};
 
-
-fn addr_from_port(port: &str) -> SocketAddr {
-    SocketAddr::from_str(&format!("127.0.0.1:{}", port)).unwrap()
-}
 
 #[test]
 fn test_local_route_node_simple() {
@@ -26,24 +23,33 @@ fn test_local_route_node_simple() {
         ("xy/#", vec!["70", "71"]),
         ("xy/xxxx", vec!["80"]),
     ];
-    for &(topic_filter, ref ports) in subs.iter() {
-        for port in ports {
+    for &(topic_filter, ref client_identifiers) in subs.iter() {
+        for client_identifier in client_identifiers {
             routes.insert(&TopicFilter::new(topic_filter),
-                          addr_from_port(port), QualityOfService::Level0);
+                          &ClientIdentifier(client_identifier.to_string()),
+                          QualityOfService::Level0);
         }
     }
 
-    let is_removed = routes.remove(&TopicFilter::new("Nothing/Will/Match"), addr_from_port("80"));
+    let is_removed = routes.remove(
+        &TopicFilter::new("Nothing/Will/Match"),
+        &ClientIdentifier("80".to_owned())
+    );
     assert_eq!(is_removed, false);
-    let is_removed = routes.remove(&TopicFilter::new("ab"), addr_from_port("9999"));
+    let is_removed = routes.remove(
+        &TopicFilter::new("ab"),
+        &ClientIdentifier("9999".to_owned())
+    );
     assert_eq!(is_removed, false);
 
     println!("[Routes]: {:#?}", routes);
     assert_eq!(routes.is_empty(), false);
-    for &(topic_filter, ref ports) in subs.iter() {
-        for port in ports {
+    for &(topic_filter, ref client_identifiers) in subs.iter() {
+        for client_identifier in client_identifiers {
             let is_removed = routes.remove(
-                &TopicFilter::new(topic_filter), addr_from_port(port));
+                &TopicFilter::new(topic_filter),
+                &ClientIdentifier(client_identifier.to_string())
+            );
             assert_eq!(is_removed, true);
         }
     }
@@ -66,10 +72,13 @@ fn test_local_route_node_normal() {
         ("xy/#", vec!["70", "71"]),
         ("xy/xxxx", vec!["80"]),
     ];
-    for (topic_filter, ports) in subs {
-        for port in ports {
-            routes.insert(&TopicFilter::new(topic_filter),
-                          addr_from_port(port), QualityOfService::Level0);
+    for (topic_filter, client_identifiers) in subs {
+        for client_identifier in client_identifiers {
+            routes.insert(
+                &TopicFilter::new(topic_filter),
+                &ClientIdentifier(client_identifier.to_string()),
+                QualityOfService::Level0
+            );
         }
     }
 
@@ -82,21 +91,24 @@ fn test_local_route_node_normal() {
         ("xy/333/t", vec!["62", "63", "70", "71"]),
         ("nothing/will/match", vec![]),
     ];
-    for (topic_name, ports) in cases {
-        println!(">> [Case]: ({:?}, {:?})", topic_name, ports);
+    for (topic_name, client_identifiers) in cases {
+        println!(">> [Case]: ({:?}, {:?})", topic_name, client_identifiers);
         let addrs = routes.search(&TopicName::new(topic_name.to_string()).unwrap());
-        assert_eq!(addrs.len(), ports.len());
-        for port in ports {
-            assert_eq!(addrs.contains_key(&addr_from_port(port)), true);
+        assert_eq!(addrs.len(), client_identifiers.len());
+        for client_identifier in client_identifiers {
+            assert_eq!(addrs.contains_key(&ClientIdentifier(client_identifier.to_string())), true);
         }
     }
 
     let unsubs = vec![
         ("xy/+", vec!["60", "61", "62"]),
     ];
-    for (topic_filter, ports) in unsubs {
-        for port in ports {
-            routes.remove(&TopicFilter::new(topic_filter), addr_from_port(port));
+    for (topic_filter, client_identifiers) in unsubs {
+        for client_identifier in client_identifiers {
+            routes.remove(
+                &TopicFilter::new(topic_filter),
+                &ClientIdentifier(client_identifier.to_string())
+            );
         }
     }
     let cases = vec![
@@ -106,11 +118,11 @@ fn test_local_route_node_normal() {
         ("xy/333/t", vec!["62", "63", "70", "71"]),
         ("nothing/will/match", vec![]),
     ];
-    for (topic_name, ports) in cases {
+    for (topic_name, client_identifiers) in cases {
         let addrs = routes.search(&TopicName::new(topic_name.to_string()).unwrap());
-        assert_eq!(addrs.len(), ports.len());
-        for port in ports {
-            assert_eq!(addrs.contains_key(&addr_from_port(port)), true);
+        assert_eq!(addrs.len(), client_identifiers.len());
+        for client_identifier in client_identifiers {
+            assert_eq!(addrs.contains_key(&ClientIdentifier(client_identifier.to_string())), true);
         }
     }
 }
