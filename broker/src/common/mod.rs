@@ -2,6 +2,8 @@
 pub mod net;
 pub mod route;
 
+use bincode::{self, Infinite};
+
 use mqtt::{TopicName, TopicFilter, QualityOfService};
 use mqtt::packet::PublishPacket;
 
@@ -51,8 +53,14 @@ impl Topic {
 }
 
 
-/******************** TODO: RPC message *************************/
-#[derive(Serialize, Deserialize, PartialEq)]
+/******************** RPC message *************************/
+#[derive(Debug)]
+pub enum CodecState {
+    Len,
+    Payload { len: u64 },
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub enum StoreRequest {
     Publish(UserId, PublishPacket),
     Subscribe(UserId, Vec<Topic>),
@@ -60,7 +68,16 @@ pub enum StoreRequest {
     GetRetains(UserId, ClientIdentifier, Topic, QualityOfService)
 }
 
-#[derive(Serialize, Deserialize, PartialEq)]
+impl StoreRequest {
+    pub fn encode(&self) -> Vec<u8> {
+        bincode::serialize(self, Infinite).unwrap()
+    }
+
+    pub fn decode(data: Vec<u8>, state: CodecState) {
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub enum StoreResponse {
     Publish(UserId, PublishPacket),
     Retains(UserId, ClientIdentifier, Vec<PublishPacket>, QualityOfService),
