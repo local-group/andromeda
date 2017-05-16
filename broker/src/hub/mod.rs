@@ -5,6 +5,7 @@ pub mod local_router;
 pub mod router_follower;
 pub mod router_leader;
 pub mod session_timer;
+pub mod store_client;
 
 use std::fmt;
 use std::net::SocketAddr;

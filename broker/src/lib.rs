@@ -29,7 +29,6 @@ use futures::sync::mpsc;
 use native_tls::{TlsAcceptor};
 
 
-
 pub fn run_simple(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) {
     let (client_connection_tx, client_connection_rx) = mpsc::channel::<hub::ClientConnectionMsg>(1024);
     let (client_session_tx, client_session_rx) = channel::<hub::ClientSessionMsg>();
@@ -38,6 +37,7 @@ pub fn run_simple(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) {
     let (router_follower_tx, router_follower_rx) = mpsc::channel::<hub::RouterFollowerMsg>(1024);
     let (router_leader_tx, router_leader_rx) = mpsc::channel::<hub::RouterLeaderMsg>(1024);
     let (global_retain_tx, global_retain_rx) = channel::<store::GlobalRetainMsg>();
+    let (store_client_tx, store_client_rx) = mpsc::channel::<common::StoreRequest>(1024);
 
     let router_leader = thread::spawn(move || {
         hub::router_leader::run_epoll(router_leader_rx);
@@ -58,13 +58,15 @@ pub fn run_simple(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) {
     let cloned_router_follower_tx = router_follower_tx.clone();
     let cloned_router_leader_tx = router_leader_tx.clone();
     let cloned_global_retain_tx = global_retain_tx.clone();
+    let cloned_store_client_tx = store_client_tx.clone();
     let local_router = thread::spawn(move || {
         hub::local_router::run(local_router_rx,
                                cloned_local_router_tx,
                                cloned_client_session_tx,
                                cloned_router_follower_tx,
                                cloned_router_leader_tx,
-                               cloned_global_retain_tx);
+                               cloned_global_retain_tx,
+                               cloned_store_client_tx);
     });
 
     let cloned_client_connection_tx = client_connection_tx.clone();
@@ -90,10 +92,16 @@ pub fn run_simple(addr: SocketAddr, tls_acceptor: Option<TlsAcceptor>) {
         store::global_retain::run(global_retain_rx, cloned_client_session_tx);
     });
 
+    let url = "tcp://127.0.0.1:8884";
+    let cloned_local_router_tx = local_router_tx.clone();
+    let store_client = thread::spawn(move || {
+        hub::store_client::run(url, store_client_rx, cloned_local_router_tx);
+    });
+
     for handle in vec![client_connection, client_session, session_timer,
                        local_router,
                        router_follower, router_leader,
-                       global_retain] {
+                       global_retain, store_client] {
         handle.join().unwrap();
     }
 }

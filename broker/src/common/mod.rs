@@ -13,7 +13,7 @@ pub use self::route::{
 };
 pub use self::net::{
     MsgFromNet, ToNetMsg,
-    NetServer
+    NetServer, NetClient
 };
 
 
@@ -66,15 +66,6 @@ pub enum StoreRequest {
     Subscribe(UserId, Vec<Topic>),
     Unsubscribe(UserId, Vec<Topic>),
     GetRetains(UserId, ClientIdentifier, Topic, QualityOfService)
-}
-
-impl StoreRequest {
-    pub fn encode(&self) -> Vec<u8> {
-        bincode::serialize(self, Infinite).unwrap()
-    }
-
-    pub fn decode(data: Vec<u8>, state: CodecState) {
-    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]

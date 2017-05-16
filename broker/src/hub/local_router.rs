@@ -2,12 +2,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Sender, Receiver};
 
+use futures::{Future, Sink};
 use futures::sync::mpsc;
 
 use mqtt::packet::{Packet};
 use mqtt::{TopicFilter, TopicName, QualityOfService};
 
-use common::{Topic, RouteKey, UserId, ClientIdentifier};
+use common::{Topic, RouteKey, UserId, ClientIdentifier, StoreRequest};
 use store::{GlobalRetainMsg};
 use super::{ClientSessionMsg, LocalRouterMsg};
 
@@ -19,14 +20,20 @@ pub fn run(
     _router_follower_tx: mpsc::Sender<super::RouterFollowerMsg>,
     _router_leader_tx: mpsc::Sender<super::RouterLeaderMsg>,
     global_retain_tx: Sender<GlobalRetainMsg>,
+    store_client_tx: mpsc::Sender<StoreRequest>
 ) {
     let mut local_routes = LocalRoutes::new();
     loop {
         let msg = local_router_rx.recv().unwrap();
         match msg {
             LocalRouterMsg::ForwardPublish(user_id, packet) => {
-                // Forward message to current receiver.
-                local_router_tx.send(LocalRouterMsg::Publish(user_id, packet)).unwrap();
+                // [[The global way]]:
+                //  Forward message to store client (global router).
+                let msg = StoreRequest::Publish(user_id, packet);
+                store_client_tx.clone().send(msg).wait().unwrap();
+                // [[The local way]]:
+                //  Forward message to local router.
+                // local_router_tx.send(LocalRouterMsg::Publish(user_id, packet)).unwrap();
             }
             LocalRouterMsg::Publish(user_id, packet) => {
                 let topic_name = TopicName::new(packet.topic_name().to_string()).unwrap();
@@ -36,21 +43,34 @@ pub fn run(
                 }
             }
             LocalRouterMsg::Subscribe(user_id, client_identifier, addr, packet) => {
+                let mut topics = Vec::new();
                 for &(ref topic_filter, qos) in packet.payload().subscribes() {
                     let topic = Topic::from_filter(topic_filter);
-                    let _ = local_routes.insert_topic(user_id, &topic, &client_identifier, qos);
+                    let first_sub = local_routes.insert_topic(user_id, &topic, &client_identifier, qos);
+                    if first_sub {
+                        topics.push(topic.clone());
+                    }
                     // <Spec>: [MQTT-3.8.4-3] "Any existing retained messages matching the Topic Filter MUST be re-sent"
                     let msg = GlobalRetainMsg::MatchAll(user_id, addr, topic, qos);
                     global_retain_tx.send(msg).unwrap();
                 }
+                let msg = StoreRequest::Subscribe(user_id, topics);
+                store_client_tx.clone().send(msg).wait().unwrap();
             }
             LocalRouterMsg::Unsubscribe(user_id, client_identifier, packet) => {
+                let mut topics = Vec::new();
                 for topic_filter in packet.payload().subscribes() {
                     let topic = Topic::from_filter(topic_filter);
-                    local_routes.remove_topic(user_id, &topic, &client_identifier);
+                    let last_removed = local_routes.remove_topic(user_id, &topic, &client_identifier);
+                    if last_removed {
+                        topics.push(topic);
+                    }
                 }
+                let msg = StoreRequest::Unsubscribe(user_id, topics);
+                store_client_tx.clone().send(msg).wait().unwrap();
             }
             LocalRouterMsg::ClientDisconnect(user_id, client_identifier) => {
+                // TODO: unsubscribe last removed topic
                 local_routes.remove_all_topics(user_id, &client_identifier);
             }
         }
@@ -113,24 +133,24 @@ impl LocalRouteNode {
                     Some(ref mut map) => {
                         let mut child_empty = false;
                         let key = RouteKey::from(token);
-                        let is_removed = match map.get_mut(&key) {
+                        let last_removed = match map.get_mut(&key) {
                             Some(node) => {
-                                let is_removed = node._remove(tokens, client_identifier);
+                                let last_removed = node._remove(tokens, client_identifier);
                                 child_empty = node.is_empty();
-                                is_removed
+                                last_removed
                             }
                             None => false
                         };
                         if child_empty {
                             map.remove(&key);
                         }
-                        is_removed
+                        last_removed
                     }
                     None => false
                 }
             }
             None => {
-                self.clients.remove(client_identifier).is_some()
+                self.clients.remove(client_identifier).is_some() && self.clients.is_empty()
             }
         }
     }
@@ -229,30 +249,31 @@ impl LocalRoutes {
         }
     }
 
-    fn remove_topic(&mut self, user_id: UserId, topic: &Topic, client_identifier: &ClientIdentifier) {
+    fn remove_topic(&mut self, user_id: UserId, topic: &Topic, client_identifier: &ClientIdentifier) -> bool {
         if let Some(ref mut client_topics) = self.client_topics.get_mut(&user_id) {
             match client_topics.get_mut(client_identifier) {
-                Some(ref mut topic_name_set) => topic_name_set.remove(topic),
+                Some(ref mut topic_set) => topic_set.remove(topic),
                 None => false
             };
         }
         match topic {
             &Topic::Filter(ref topic_filter) => {
                 if let Some(ref mut filter_routes) = self.filter_routes.get_mut(&user_id) {
-                    filter_routes.remove(topic_filter, client_identifier);
-                }
+                    filter_routes.remove(topic_filter, client_identifier)
+                } else { false }
             }
             &Topic::Name(ref topic_name) => {
                 if let Some(ref mut name_routes) = self.name_routes.get_mut(&user_id) {
                     match name_routes.get_mut(topic_name) {
-                        Some(ref mut client_map) => client_map.remove(client_identifier).is_some(),
+                        Some(ref mut client_map) => client_map.remove(client_identifier).is_some() && client_map.is_empty(),
                         None => false
-                    };
-                }
+                    }
+                } else { false }
             }
         }
     }
 
+    // TODO: should return last removed topics
     fn remove_all_topics(&mut self, user_id: UserId, client_identifier: &ClientIdentifier) -> usize {
         if let Some(ref mut client_topics) = self.client_topics.get_mut(&user_id) {
             let removed_count = match client_topics.get_mut(client_identifier) {
